@@ -1,35 +1,42 @@
-#include "qrcode_yunet.hpp"
+#include <iostream>  // 添加了这个头文件
 
 #include <opencv2/dnn.hpp>
 #include <opencv2/imgproc.hpp>
-
-#include <onnxruntime/onnxruntime_cxx_api.h>
-
-#include <algorithm>
 #include <cmath>
+#include <vector>
+#include <algorithm>
 
+class YunetWrapper {
+public:
+    YunetWrapper(const std::string& model_path);
 
-// ===================================================
-// Constructor
-// ===================================================
+    bool detect(const cv::Mat& img, cv::Rect& out_box);
+
+private:
+    cv::Rect scaleBack(const cv::Rect& r, float sx, float sy, int W, int H);
+    std::vector<int> nms(const std::vector<cv::Rect>& boxes,
+                         const std::vector<float>& scores,
+                         float thresh);
+
+private:
+    cv::dnn::Net net_;  // 使用 OpenCV DNN 模型
+
+    int input_w_ = 640;
+    int input_h_ = 640;
+};
+
+// 构造函数
 YunetWrapper::YunetWrapper(const std::string& model_path)
 {
-    env_ = std::make_unique<Ort::Env>(ORT_LOGGING_LEVEL_WARNING, "yunet");
-    opts_ = std::make_unique<Ort::SessionOptions>();
-
-    opts_->SetIntraOpNumThreads(1);
-    opts_->SetGraphOptimizationLevel(GraphOptimizationLevel::ORT_ENABLE_EXTENDED);
-
-    session_ = std::make_unique<Ort::Session>(*env_, model_path.c_str(), *opts_);
+    // 使用OpenCV加载DNN模型
+    net_ = cv::dnn::readNetFromONNX(model_path);
+    if (net_.empty()) {
+        std::cerr << "Failed to load model: " << model_path << std::endl;
+    }
 }
 
-
-// ===================================================
-// Helper: scale box back to original resolution
-// ===================================================
-cv::Rect YunetWrapper::scaleBack(const cv::Rect& r,
-                                 float sx, float sy,
-                                 int W, int H)
+// 辅助函数：将框坐标转换回原始分辨率
+cv::Rect YunetWrapper::scaleBack(const cv::Rect& r, float sx, float sy, int W, int H)
 {
     int x1 = std::max(0, (int)(r.x * sx));
     int y1 = std::max(0, (int)(r.y * sy));
@@ -38,10 +45,7 @@ cv::Rect YunetWrapper::scaleBack(const cv::Rect& r,
     return cv::Rect(x1, y1, x2 - x1, y2 - y1);
 }
 
-
-// ===================================================
-// NMS wrapper
-// ===================================================
+// 辅助函数：非极大值抑制
 std::vector<int> YunetWrapper::nms(const std::vector<cv::Rect>& boxes,
                                    const std::vector<float>& scores,
                                    float thresh)
@@ -51,16 +55,16 @@ std::vector<int> YunetWrapper::nms(const std::vector<cv::Rect>& boxes,
     return idx;
 }
 
-
+// 检测函数
 bool YunetWrapper::detect(const cv::Mat& img, cv::Rect& out_box)
 {
-    if (!session_) return false;
+    if (net_.empty()) return false;
 
     int W = img.cols;
     int H = img.rows;
 
     // ----------------------------------------
-    // Preprocess: resize → float32 → CHW
+    // 预处理：调整大小 → 转换为 float32 → CHW
     // ----------------------------------------
     cv::Mat resized;
     cv::resize(img, resized, cv::Size(input_w_, input_h_));
@@ -68,71 +72,18 @@ bool YunetWrapper::detect(const cv::Mat& img, cv::Rect& out_box)
     resized.convertTo(resized, CV_32F);
 
     // HWC → CHW
-    std::vector<float> blob;
-    blob.resize(3 * input_w_ * input_h_);
+    cv::Mat blob = cv::dnn::blobFromImage(resized);
 
-    int idx = 0;
-    for (int c = 0; c < 3; c++)
-    {
-        for (int y = 0; y < input_h_; y++)
-        {
-            for (int x = 0; x < input_w_; x++)
-            {
-                blob[idx++] = resized.at<cv::Vec3f>(y, x)[c];
-            }
-        }
-    }
-
-    // Create ONNX tensor
-    Ort::MemoryInfo memInfo =
-        Ort::MemoryInfo::CreateCpu(OrtArenaAllocator, OrtMemTypeDefault);
-
-    std::array<int64_t, 4> dims = {1, 3, input_h_, input_w_};
-
-    Ort::Value inputTensor = Ort::Value::CreateTensor<float>(
-        memInfo,
-        blob.data(),
-        blob.size(),
-        dims.data(),
-        dims.size()
-    );
+    // 将输入设置到网络中
+    net_.setInput(blob);
 
     // ----------------------------------------
-    // Prepare input/output names
+    // 执行 OpenCV DNN 推理
     // ----------------------------------------
-    Ort::AllocatorWithDefaultOptions allocator;
-
-    // Input name
-    Ort::AllocatedStringPtr inName =
-        session_->GetInputNameAllocated(0, allocator);
-
-    const char* input_names[] = { inName.get() };   // ✓ 正确写法
-
-    // Output names
-    std::vector<const char*> outputNames;
-    std::vector<Ort::AllocatedStringPtr> outNameHolders;
-
-    size_t outCount = session_->GetOutputCount();
-    for (size_t i = 0; i < outCount; i++)
-    {
-        outNameHolders.push_back(session_->GetOutputNameAllocated(i, allocator));
-        outputNames.push_back(outNameHolders.back().get());
-    }
+    cv::Mat output = net_.forward();
 
     // ----------------------------------------
-    // Run ONNX model (✓ 已修复)
-    // ----------------------------------------
-    auto out = session_->Run(
-        Ort::RunOptions{},
-        input_names,
-        &inputTensor,
-        1,
-        outputNames.data(),
-        outputNames.size()
-    );
-
-    // ----------------------------------------
-    // Decode YUNET output
+    // 解码 YUNET 输出
     // ----------------------------------------
     std::vector<cv::Rect> boxes;
     std::vector<float> scores;
@@ -140,24 +91,23 @@ bool YunetWrapper::detect(const cv::Mat& img, cv::Rect& out_box)
     int strides[3] = {8, 16, 32};
     int outIndex = 0;
 
-    for (int s = 0; s < 3; s++)
+    for (int stride_idx = 0; stride_idx < 3; stride_idx++)  // 重命名变量s
     {
-        int stride = strides[s];
+        int stride = strides[stride_idx];
 
-        auto& cls   = out[outIndex++];
-        auto& obj   = out[outIndex++];
-        auto& box   = out[outIndex++];
-        auto& kps   = out[outIndex++];
+        auto cls = output.row(outIndex++);
+        auto obj = output.row(outIndex++);
+        auto box = output.row(outIndex++);
+        auto kps = output.row(outIndex++);  // 如果不使用，可以删除
 
-        float* cls_ptr = cls.GetTensorMutableData<float>();
-        float* obj_ptr = obj.GetTensorMutableData<float>();
-        float* box_ptr = box.GetTensorMutableData<float>();
+        float* cls_ptr = cls.ptr<float>();
+        float* obj_ptr = obj.ptr<float>();
+        float* box_ptr = box.ptr<float>();
 
-        auto ts = cls.GetTensorTypeAndShapeInfo();
-        int N = ts.GetElementCount() / 5;
+        int N = cls.total() / 5;
 
         int gw = input_w_ / stride;
-        int gh = input_h_ / stride;
+        // gh 已经不再使用
 
         for (int i = 0; i < N; i++)
         {

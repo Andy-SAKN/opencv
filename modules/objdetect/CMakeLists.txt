@@ -7,7 +7,7 @@ ocv_define_module(objdetect
     opencv_imgproc
     opencv_3d
     OPTIONAL
-        opencv_dnn
+        opencv_dnn  # Ensure opencv_dnn is included for DNN module support
     WRAP
         python
         java
@@ -16,32 +16,17 @@ ocv_define_module(objdetect
 )
 
 # ============================================================
-#      ONNXRUNTIME SUPPORT FOR CUSTOM YUNET QR DETECTOR
+#      YUNET QR DETECTOR USING OPENCV DNN (No ONNXRuntime)
 # ============================================================
 
 if(OPENCV_ENABLE_YUNET_QR)
-    message(STATUS "YUNET QR: ON – linking ONNXRuntime")
+    message(STATUS "YUNET QR: ON – using OpenCV DNN instead of ONNXRuntime")
 
-    # Homebrew installation path of ONNXRuntime
-    set(ONNXRUNTIME_ROOT "/opt/homebrew/opt/onnxruntime")
+    # Ensure OpenCV DNN module is linked
+    target_link_libraries(opencv_objdetect PRIVATE opencv_dnn)
 
-    # Add ONNXRuntime headers
-    target_include_directories(opencv_objdetect PRIVATE
-        ${ONNXRUNTIME_ROOT}/include
-    )
-
-    # Add ONNXRuntime library directory
-    target_link_directories(opencv_objdetect PRIVATE
-        ${ONNXRUNTIME_ROOT}/lib
-    )
-
-    # Link the library
-    target_link_libraries(opencv_objdetect PRIVATE
-        onnxruntime
-    )
-
-    message(STATUS "Using ONNXRuntime include dir: ${ONNXRUNTIME_ROOT}/include")
-    message(STATUS "Using ONNXRuntime lib dir:     ${ONNXRUNTIME_ROOT}/lib")
+    # Message to indicate the change
+    message(STATUS "Using OpenCV DNN for YUNET QR detection")
 endif()
 
 # ============================================================

@@ -1,9 +1,6 @@
-// qrcode_yunet.hpp
-
 #pragma once
 #include <opencv2/core.hpp>
-#include <onnxruntime/onnxruntime_cxx_api.h>
-#include <memory>
+#include <opencv2/dnn.hpp>  // OpenCV DNN header
 
 class YunetWrapper {
 public:
@@ -18,11 +15,8 @@ private:
                          float thresh);
 
 private:
-    std::unique_ptr<Ort::Env> env_;
-    std::unique_ptr<Ort::SessionOptions> opts_;
-    std::unique_ptr<Ort::Session> session_;
+    cv::dnn::Net net_;  // OpenCV DNN model
 
     int input_w_ = 640;
     int input_h_ = 640;
 };
-
