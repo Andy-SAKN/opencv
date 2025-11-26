@@ -2996,10 +2996,19 @@ std::string ImplContour::detectAndDecode(InputArray in,
                                          OutputArray straight_qrcode) const
 {
     cv::Mat inarr;
+    // 使用 checkQRInputImage 函数处理图像
     if (!checkQRInputImage(in, inarr))
     {
         points_.release();
         return std::string();
+    }
+
+    // 在此处获取图像的 cv::Mat 版本，并检查是否是灰度图
+    inarr = in.getMat();
+
+    // 如果图像是灰度图（单通道），则将其转换为 3 通道（BGR）
+    if (inarr.channels() == 1) {
+        cv::cvtColor(inarr, inarr, cv::COLOR_GRAY2BGR);  // 转换为 3 通道（BGR）
     }
 
     // -----------------------------------------------------------
@@ -3098,6 +3107,13 @@ std::string ImplContour::detectAndDecodeCurved(InputArray in,
     {
         points_.release();
         return std::string();
+    }
+    // 在此处获取图像的 cv::Mat 版本，并检查是否是灰度图
+    inarr = in.getMat();
+
+    // 如果图像是灰度图（单通道），则将其转换为 3 通道（BGR）
+    if (inarr.channels() == 1) {
+        cv::cvtColor(inarr, inarr, cv::COLOR_GRAY2BGR);  // 转换为 3 通道（BGR）
     }
 
     // -----------------------------------------------------------
