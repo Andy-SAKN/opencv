@@ -1,51 +1,32 @@
-#include <iostream>  // 添加了这个头文件
+#include "qrcode_yunet.hpp"
 
-#include <opencv2/dnn.hpp>
-#include <opencv2/imgproc.hpp>
-#include <cmath>
-#include <vector>
 #include <algorithm>
+#include <cmath>
+#include <iostream>
 
-class YunetWrapper {
-public:
-    YunetWrapper(const std::string& model_path);
-
-    bool detect(const cv::Mat& img, cv::Rect& out_box);
-
-private:
-    cv::Rect scaleBack(const cv::Rect& r, float sx, float sy, int W, int H);
-    std::vector<int> nms(const std::vector<cv::Rect>& boxes,
-                         const std::vector<float>& scores,
-                         float thresh);
-
-private:
-    cv::dnn::Net net_;  // 使用 OpenCV DNN 模型
-
-    int input_w_ = 640;
-    int input_h_ = 640;
-};
-
-// 构造函数
+// ===================================================
+// Constructor: Load ONNX using OpenCV DNN
+// ===================================================
 YunetWrapper::YunetWrapper(const std::string& model_path)
 {
-    // 使用OpenCV加载DNN模型
-    net_ = cv::dnn::readNetFromONNX(model_path);
-    if (net_.empty()) {
-        std::cerr << "Failed to load model: " << model_path << std::endl;
+    try {
+        net_ = cv::dnn::readNet(model_path);
+    } catch (const cv::Exception& e) {
+        std::cerr << "Error loading Yunet model: " << e.what() << std::endl;
+        return;
     }
+
+    // 设置后端和目标设备 (根据需要可以改为 CUDA)
+    net_.setPreferableBackend(cv::dnn::DNN_BACKEND_OPENCV);
+    net_.setPreferableTarget(cv::dnn::DNN_TARGET_CPU);
+
+    // 获取输出层名称，避免每次推理都获取
+    out_names_ = net_.getUnconnectedOutLayersNames();
 }
 
-// 辅助函数：将框坐标转换回原始分辨率
-cv::Rect YunetWrapper::scaleBack(const cv::Rect& r, float sx, float sy, int W, int H)
-{
-    int x1 = std::max(0, (int)(r.x * sx));
-    int y1 = std::max(0, (int)(r.y * sy));
-    int x2 = std::min(W, (int)((r.x + r.width) * sx));
-    int y2 = std::min(H, (int)((r.y + r.height) * sy));
-    return cv::Rect(x1, y1, x2 - x1, y2 - y1);
-}
-
-// 辅助函数：非极大值抑制
+// ===================================================
+// NMS Wrapper
+// ===================================================
 std::vector<int> YunetWrapper::nms(const std::vector<cv::Rect>& boxes,
                                    const std::vector<float>& scores,
                                    float thresh)
@@ -55,35 +36,62 @@ std::vector<int> YunetWrapper::nms(const std::vector<cv::Rect>& boxes,
     return idx;
 }
 
-// 检测函数
+// ===================================================
+// Detect Function
+// ===================================================
 bool YunetWrapper::detect(const cv::Mat& img, cv::Rect& out_box)
 {
-    if (net_.empty()) return false;
-
-    int W = img.cols;
-    int H = img.rows;
+    if (net_.empty() || img.empty()) return false;
 
     // ----------------------------------------
-    // 预处理：调整大小 → 转换为 float32 → CHW
+    // 1. Letterbox Preprocess (保持比例补黑边)
     // ----------------------------------------
+    int w = img.cols;
+    int h = img.rows;
+
+    float scale = std::min((float)input_w_ / w, (float)input_h_ / h);
+    
+    // 计算缩放后的新尺寸
+    int new_w = std::round(w * scale);
+    int new_h = std::round(h * scale);
+
+    // 计算 padding (让图像居中)
+    int dw = (input_w_ - new_w) / 2;
+    int dh = (input_h_ - new_h) / 2;
+
+    // Resize 图像
     cv::Mat resized;
-    cv::resize(img, resized, cv::Size(input_w_, input_h_));
+    if (w != new_w || h != new_h) {
+        cv::resize(img, resized, cv::Size(new_w, new_h));
+    } else {
+        resized = img;
+    }
 
-    resized.convertTo(resized, CV_32F);
+    // 填充黑边 (Top, Bottom, Left, Right)
+    cv::Mat input_blob_img;
+    cv::copyMakeBorder(resized, input_blob_img, 
+                       dh, input_h_ - new_h - dh, 
+                       dw, input_w_ - new_w - dw, 
+                       cv::BORDER_CONSTANT, cv::Scalar(0, 0, 0));
 
-    // HWC → CHW
-    cv::Mat blob = cv::dnn::blobFromImage(resized);
+    // ----------------------------------------
+    // 2. Convert to Blob (HWC -> CHW, BGR -> RGB)
+    // ----------------------------------------
+    // scalefactor=1.0: 因为之前的代码是 convertTo(CV_32F) 而没有除以 255，说明模型输入是 0-255
+    // swapRB=true:     用户要求输入 RGB，而 OpenCV 读取是 BGR
+    // crop=false:      我们已经手动处理了尺寸
+    cv::Mat blob = cv::dnn::blobFromImage(input_blob_img, 1.0, cv::Size(), cv::Scalar(0, 0, 0), true, false);
 
-    // 将输入设置到网络中
     net_.setInput(blob);
 
     // ----------------------------------------
-    // 执行 OpenCV DNN 推理
+    // 3. Run Inference
     // ----------------------------------------
-    cv::Mat output = net_.forward();
+    std::vector<cv::Mat> outs;
+    net_.forward(outs, out_names_);
 
     // ----------------------------------------
-    // 解码 YUNET 输出
+    // 4. Decode Output
     // ----------------------------------------
     std::vector<cv::Rect> boxes;
     std::vector<float> scores;
@@ -91,30 +99,38 @@ bool YunetWrapper::detect(const cv::Mat& img, cv::Rect& out_box)
     int strides[3] = {8, 16, 32};
     int outIndex = 0;
 
-    for (int stride_idx = 0; stride_idx < 3; stride_idx++)  // 重命名变量s
+    // 假设输出顺序与之前一致：每层 stride 有 4 个 tensor (cls, obj, box, kps)
+    // 注意：如果 cv::dnn 解析 ONNX 的层顺序与 ONNXRuntime 不一致，这里可能需要根据 layer name 调整
+    // 但通常 getUnconnectedOutLayersNames 的顺序是确定的。
+    
+    // 安全检查
+    if (outs.size() < 12) return false; 
+
+    for (int s = 0; s < 3; s++)
     {
-        int stride = strides[stride_idx];
+        int stride = strides[s];
 
-        auto cls = output.row(outIndex++);
-        auto obj = output.row(outIndex++);
-        auto box = output.row(outIndex++);
-        auto kps = output.row(outIndex++);  // 如果不使用，可以删除
+        // 获取当前 stride 的 4 个输出
+        // 注意：cv::dnn 的输出 Mat 形状通常是 [batch, channels, h, w] 或平铺的
+        // 这里假设与 ONNXRuntime 的解析逻辑一致 (NCHW 或类似的扁平结构)
+        const float* cls_ptr = outs[outIndex++].ptr<float>();
+        const float* obj_ptr = outs[outIndex++].ptr<float>();
+        const float* box_ptr = outs[outIndex++].ptr<float>();
+        outIndex++; // 跳过 kps，因为不需要
 
-        float* cls_ptr = cls.ptr<float>();
-        float* obj_ptr = obj.ptr<float>();
-        float* box_ptr = box.ptr<float>();
-
-        int N = cls.total() / 5;
-
+        // 计算特征图大小
         int gw = input_w_ / stride;
-        // gh 已经不再使用
+        int gh = input_h_ / stride;
+        int N = gw * gh;
 
         for (int i = 0; i < N; i++)
         {
-            if (obj_ptr[i] < 0.2f) continue;
+            float obj_score = obj_ptr[i];
+            if (obj_score < 0.2f) continue;
 
             float maxc = -1.f;
             int cid = -1;
+            // 假设有 5 个类别 (根据原代码逻辑)
             for (int c = 0; c < 5; c++)
             {
                 float s = cls_ptr[i * 5 + c];
@@ -125,42 +141,66 @@ bool YunetWrapper::detect(const cv::Mat& img, cv::Rect& out_box)
                 }
             }
 
-            float score = maxc * obj_ptr[i];
-            if (score < 0.2f) continue;
+            // 假设 class 3 是二维码
             if (cid != 3) continue;
 
+            float score = maxc * obj_score;
+            if (score < 0.2f) continue;
+
+            // 还原网格坐标
             int y = i / gw;
             int x = i % gw;
 
+            // 回归 box
             float ax = x * stride;
             float ay = y * stride;
 
-            float dx = box_ptr[i * 4 + 0];
-            float dy = box_ptr[i * 4 + 1];
-            float dw = box_ptr[i * 4 + 2];
-            float dh = box_ptr[i * 4 + 3];
+            float dx_val = box_ptr[i * 4 + 0];
+            float dy_val = box_ptr[i * 4 + 1];
+            float dw_val = box_ptr[i * 4 + 2];
+            float dh_val = box_ptr[i * 4 + 3];
 
-            float cx = dx * stride + ax;
-            float cy = dy * stride + ay;
+            float cx = dx_val * stride + ax;
+            float cy = dy_val * stride + ay;
 
-            float ww = std::exp(dw) * stride;
-            float hh = std::exp(dh) * stride;
+            float ww = std::exp(dw_val) * stride;
+            float hh = std::exp(dh_val) * stride;
 
-            boxes.emplace_back(cx - ww*0.5f, cy - hh*0.5f, ww, hh);
+            boxes.emplace_back(cx - ww * 0.5f, cy - hh * 0.5f, ww, hh);
             scores.push_back(score);
         }
     }
 
     if (boxes.empty()) return false;
 
+    // ----------------------------------------
+    // 5. NMS
+    // ----------------------------------------
     auto keep = nms(boxes, scores, 0.45f);
     if (keep.empty()) return false;
 
-    cv::Rect best = boxes[keep[0]];
+    cv::Rect best_box_net = boxes[keep[0]];
 
-    float sx = (float)W / input_w_;
-    float sy = (float)H / input_h_;
+    // ----------------------------------------
+    // 6. Scale Back to Original Image (Inverse Letterbox)
+    // ----------------------------------------
+    // 坐标映射公式: x_orig = (x_net - padding) / scale
+    
+    float x = (best_box_net.x - dw) / scale;
+    float y = (best_box_net.y - dh) / scale;
+    float w_orig = best_box_net.width / scale;
+    float h_orig = best_box_net.height / scale;
 
-    out_box = scaleBack(best, sx, sy, W, H);
+    // 边界保护，防止越界
+    int x1 = std::max(0, (int)x);
+    int y1 = std::max(0, (int)y);
+    int x2 = std::min(w, (int)(x + w_orig));
+    int y2 = std::min(h, (int)(y + h_orig));
+
+    out_box = cv::Rect(x1, y1, x2 - x1, y2 - y1);
+    
+    // 简单的有效性检查
+    if (out_box.width <= 0 || out_box.height <= 0) return false;
+
     return true;
 }
