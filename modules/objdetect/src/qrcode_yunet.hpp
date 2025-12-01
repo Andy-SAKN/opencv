@@ -15,6 +15,9 @@ public:
     ~YunetWrapper() = default;
 
     bool detect(const cv::Mat& img, cv::Rect& out_box);
+    // Multi-box detection: return ALL QR candidate boxes after NMS
+    bool detectMulti(const cv::Mat& img, std::vector<cv::Rect>& out_boxes);
+
 
 private:
     std::vector<int> nms(const std::vector<cv::Rect>& boxes,

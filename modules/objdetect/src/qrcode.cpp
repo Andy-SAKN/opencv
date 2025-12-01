@@ -24,6 +24,23 @@ namespace cv
 using std::vector;
 using std::pair;
 
+static cv::Rect expandBox(
+    const cv::Rect& box,
+    const cv::Size& imgSize,
+    float ratio = 0.15f)
+{
+    int dw = static_cast<int>(box.width  * ratio);
+    int dh = static_cast<int>(box.height * ratio);
+
+    int x1 = std::max(0, box.x - dw);
+    int y1 = std::max(0, box.y - dh);
+    int x2 = std::min(imgSize.width,  box.x + box.width  + dw);
+    int y2 = std::min(imgSize.height, box.y + box.height + dh);
+
+    return cv::Rect(x1, y1, x2 - x1, y2 - y1);
+}
+
+
 static bool checkQRInputImage(InputArray img, Mat& gray)
 {
     CV_Assert(!img.empty());
@@ -4122,29 +4139,103 @@ bool QRDetectMulti::computeTransformationPoints(const size_t cur_ind)
     return true;
 }
 
-bool ImplContour::detectMulti(InputArray in, OutputArray points) const {
+bool ImplContour::detectMulti(InputArray in, OutputArray points) const
+{
     Mat gray;
     if (!checkQRInputImage(in, gray)) {
         points.release();
         return false;
     }
-    vector<Point2f> result;
+
+    // =====================================================
+    // [NEW] 1. YUNet multi 粗检测 + 单码精定位
+    // =====================================================
+    {
+        const char* env = std::getenv("OPENCV_YUNET_MODEL");
+        if (env)
+        {
+            // --- 为 YUNet 准备彩色图 ---
+            Mat color;
+            if (in.kind() == _InputArray::MAT)
+            {
+                Mat src = in.getMat();
+                if (src.channels() == 3)
+                    color = src;
+                else if (src.channels() == 1)
+                    cvtColor(src, color, COLOR_GRAY2BGR);
+            }
+
+            if (!color.empty())
+            {
+                static YunetWrapper yunet(env);
+                std::vector<cv::Rect> boxes;
+
+                if (yunet.detectMulti(color, boxes))
+                {
+                    std::vector<Point2f> flat_result;  // ✅ 最终仍要 flatten
+
+                    for (const Rect& box : boxes)
+                    {
+                        Rect roi = expandBox(box, gray.size());
+                        Mat roi_img = gray(roi);
+
+                        QRDetect qrdet;
+                        qrdet.init(roi_img, epsX, epsY);
+
+                        if (!qrdet.localization())
+                            continue;
+                        if (!qrdet.computeTransformationPoints())
+                            continue;
+
+                        vector<Point2f> pts = qrdet.getTransformationPoints();
+                        if (pts.size() != 4)
+                            continue;
+
+                        // 映射回原图
+                        for (auto& p : pts)
+                        {
+                            p.x += roi.x;
+                            p.y += roi.y;
+                            flat_result.push_back(p);  // ✅ 保持 4 点连续
+                        }
+                    }
+
+                    if (flat_result.size() >= 4)
+                    {
+                        updatePointsResult(points, flat_result);
+                        return true;
+                    }
+                    // 有框但全部精定位失败 → fallback
+                }
+            }
+        }
+    }
+
+    // =====================================================
+    // [ORIGINAL] 2. 原 QRDetectMulti 逻辑（完全保留）
+    // =====================================================
+    vector<Point2f> flat;
     QRDetectMulti qrdet;
     qrdet.init(gray, epsX, epsY);
+
     if (!qrdet.localization()) {
         points.release();
         return false;
     }
-    vector<vector<Point2f> > pnts2f = qrdet.getTransformationPoints();
-    for(size_t i = 0; i < pnts2f.size(); i++)
-        for(size_t j = 0; j < pnts2f[i].size(); j++)
-            result.push_back(pnts2f[i][j]);
-    if (result.size() >= 4) {
-        updatePointsResult(points, result);
+
+    vector<vector<Point2f>> pnts2f = qrdet.getTransformationPoints();
+    for (const auto& quad : pnts2f)
+        for (const auto& p : quad)
+            flat.push_back(p);
+
+    if (flat.size() >= 4) {
+        updatePointsResult(points, flat);
         return true;
     }
+
     return false;
 }
+
 
 class ParallelDecodeProcess : public ParallelLoopBody
 {

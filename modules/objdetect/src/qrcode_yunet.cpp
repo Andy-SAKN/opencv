@@ -204,3 +204,181 @@ bool YunetWrapper::detect(const cv::Mat& img, cv::Rect& out_box)
 
     return true;
 }
+
+bool YunetWrapper::detectMulti(
+    const cv::Mat& img,
+    std::vector<cv::Rect>& out_boxes)
+{
+    out_boxes.clear();
+    if (net_.empty() || img.empty())
+        return false;
+
+    // ----------------------------------------
+    // 1. Letterbox Preprocess (same as detect)
+    // ----------------------------------------
+    int w = img.cols;
+    int h = img.rows;
+
+    float scale = std::min((float)input_w_ / w, (float)input_h_ / h);
+
+    int new_w = std::round(w * scale);
+    int new_h = std::round(h * scale);
+
+    int dw = (input_w_ - new_w) / 2;
+    int dh = (input_h_ - new_h) / 2;
+
+    cv::Mat resized;
+    if (w != new_w || h != new_h) {
+        cv::resize(img, resized, cv::Size(new_w, new_h));
+    } else {
+        resized = img;
+    }
+
+    cv::Mat input_blob_img;
+    cv::copyMakeBorder(
+        resized,
+        input_blob_img,
+        dh, input_h_ - new_h - dh,
+        dw, input_w_ - new_w - dw,
+        cv::BORDER_CONSTANT,
+        cv::Scalar(0, 0, 0)
+    );
+
+    // ----------------------------------------
+    // 2. Blob (same as detect)
+    // ----------------------------------------
+    cv::Mat blob = cv::dnn::blobFromImage(
+        input_blob_img,
+        1.0,
+        cv::Size(),
+        cv::Scalar(0, 0, 0),
+        true,   // swapRB
+        false   // crop
+    );
+
+    net_.setInput(blob);
+
+    // ----------------------------------------
+    // 3. Inference
+    // ----------------------------------------
+    std::vector<cv::Mat> outs;
+    net_.forward(outs, out_names_);
+
+    // Expected 3 strides × (cls + obj + box + kps)
+    if (outs.size() < 12)
+        return false;
+
+    // ----------------------------------------
+    // 4. Decode output (same logic as detect)
+    // ----------------------------------------
+    std::vector<cv::Rect> boxes;
+    std::vector<float> scores;
+
+    int strides[3] = {8, 16, 32};
+    int outIndex = 0;
+
+    for (int s = 0; s < 3; s++)
+    {
+        int stride = strides[s];
+
+        const float* cls_ptr = outs[outIndex++].ptr<float>();
+        const float* obj_ptr = outs[outIndex++].ptr<float>();
+        const float* box_ptr = outs[outIndex++].ptr<float>();
+        outIndex++;  // skip kps
+
+        int gw = input_w_ / stride;
+        int gh = input_h_ / stride;
+        int N = gw * gh;
+
+        for (int i = 0; i < N; i++)
+        {
+            float obj_score = obj_ptr[i];
+            if (obj_score < 0.2f)
+                continue;
+
+            float max_cls = -1.f;
+            int cls_id = -1;
+            for (int c = 0; c < 5; c++)
+            {
+                float s = cls_ptr[i * 5 + c];
+                if (s > max_cls)
+                {
+                    max_cls = s;
+                    cls_id = c;
+                }
+            }
+
+            // QR class = 3 (保持与你原有逻辑一致)
+            if (cls_id != 3)
+                continue;
+
+            float score = max_cls * obj_score;
+            if (score < 0.45f)
+                continue;
+
+            int y = i / gw;
+            int x = i % gw;
+
+            float ax = x * stride;
+            float ay = y * stride;
+
+            float dx = box_ptr[i * 4 + 0];
+            float dy = box_ptr[i * 4 + 1];
+            float dwb = box_ptr[i * 4 + 2];
+            float dhb = box_ptr[i * 4 + 3];
+
+            float cx = dx * stride + ax;
+            float cy = dy * stride + ay;
+
+            float bw = std::exp(dwb) * stride;
+            float bh = std::exp(dhb) * stride;
+
+            boxes.emplace_back(
+                (int)(cx - bw * 0.5f),
+                (int)(cy - bh * 0.5f),
+                (int)bw,
+                (int)bh
+            );
+            scores.push_back(score);
+        }
+    }
+
+    if (boxes.empty())
+        return false;
+
+    // ----------------------------------------
+    // 5. NMS (threshold = 0.45)
+    // ----------------------------------------
+    std::vector<int> keep = nms(boxes, scores, 0.45f);
+    if (keep.empty())
+        return false;
+
+    // ----------------------------------------
+    // 6. Scale back ALL kept boxes
+    // ----------------------------------------
+    for (int idx : keep)
+    {
+        const cv::Rect& b = boxes[idx];
+
+        float x = (b.x - dw) / scale;
+        float y = (b.y - dh) / scale;
+        float w0 = b.width  / scale;
+        float h0 = b.height / scale;
+
+        int x1 = std::max(0, (int)x);
+        int y1 = std::max(0, (int)y);
+        int x2 = std::min(w, (int)(x + w0));
+        int y2 = std::min(h, (int)(y + h0));
+
+        if (x2 > x1 && y2 > y1)
+        {
+            out_boxes.emplace_back(
+                x1, y1,
+                x2 - x1,
+                y2 - y1
+            );
+        }
+    }
+
+    return !out_boxes.empty();
+}
