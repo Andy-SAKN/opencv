@@ -4154,6 +4154,8 @@ bool ImplContour::detectMulti(InputArray in, OutputArray points) const
         const char* env = std::getenv("OPENCV_YUNET_MODEL");
         if (env)
         {
+            std::cout << "[DEBUG] Enter YUNet branch\n";
+
             // --- 为 YUNet 准备彩色图 ---
             Mat color;
             if (in.kind() == _InputArray::MAT)
@@ -4172,10 +4174,15 @@ bool ImplContour::detectMulti(InputArray in, OutputArray points) const
 
                 if (yunet.detectMulti(color, boxes))
                 {
+                    std::cout << "[DEBUG] YUNet detectMulti boxes = "
+                    << boxes.size() << std::endl;
+
+
                     std::vector<Point2f> flat_result;  // ✅ 最终仍要 flatten
 
                     for (const Rect& box : boxes)
                     {
+                        std::cout << "[DEBUG] box = " << box << std::endl;
                         Rect roi = expandBox(box, gray.size());
                         Mat roi_img = gray(roi);
 
@@ -4202,6 +4209,8 @@ bool ImplContour::detectMulti(InputArray in, OutputArray points) const
 
                     if (flat_result.size() >= 4)
                     {
+                        std::cout << "[DEBUG] YUNet refine SUCCESS\n";
+
                         updatePointsResult(points, flat_result);
                         return true;
                     }
@@ -4214,6 +4223,9 @@ bool ImplContour::detectMulti(InputArray in, OutputArray points) const
     // =====================================================
     // [ORIGINAL] 2. 原 QRDetectMulti 逻辑（完全保留）
     // =====================================================
+
+    std::cout << "[DEBUG] Fallback to Origin\n";
+
     vector<Point2f> flat;
     QRDetectMulti qrdet;
     qrdet.init(gray, epsX, epsY);
