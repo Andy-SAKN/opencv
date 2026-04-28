@@ -4,15 +4,31 @@
 #include <iostream>
 #include <map>
 
-// 辅助函数：Sigmoid
+#include "qrcode_yunet_model.inc"
+
+// Helper function: sigmoid.
 static inline float sigmoid(float x) {
     return 1.0f / (1.0f + std::exp(-x));
+}
+
+YunetWrapper::YunetWrapper()
+{
+    try {
+        net_ = cv::dnn::readNetFromONNX(reinterpret_cast<const char*>(kYunetOnnxModel),
+                                        static_cast<size_t>(kYunetOnnxModel_len));
+    } catch (const cv::Exception& e) {
+        std::cerr << "Error loading embedded Yunet model: " << e.what() << std::endl;
+        return;
+    }
+    net_.setPreferableBackend(cv::dnn::DNN_BACKEND_OPENCV);
+    net_.setPreferableTarget(cv::dnn::DNN_TARGET_CPU);
+    out_names_ = net_.getUnconnectedOutLayersNames();
 }
 
 YunetWrapper::YunetWrapper(const std::string& model_path)
 {
     try {
-        net_ = cv::dnn::readNet(model_path);
+        net_ = cv::dnn::readNetFromONNX(model_path);
     } catch (const cv::Exception& e) {
         std::cerr << "Error loading Yunet model: " << e.what() << std::endl;
         return;
@@ -36,7 +52,7 @@ bool YunetWrapper::detect(const cv::Mat& img, cv::Rect& out_box)
 {
     if (net_.empty() || img.empty()) return false;
 
-    // 1. 预处理 (Letterbox)
+    // 1. Preprocessing (letterbox).
     int w = img.cols;
     int h = img.rows;
     float scale = std::min((float)input_w_ / w, (float)input_h_ / h);
@@ -58,7 +74,7 @@ bool YunetWrapper::detect(const cv::Mat& img, cv::Rect& out_box)
     cv::Mat blob = cv::dnn::blobFromImage(input_blob_img, 1.0, cv::Size(), cv::Scalar(0, 0, 0), false, false);
     net_.setInput(blob);
 
-    // 2. 推理
+    // 2. Inference.
     std::vector<cv::Mat> outs;
     net_.forward(outs, out_names_);
 
@@ -69,7 +85,7 @@ bool YunetWrapper::detect(const cv::Mat& img, cv::Rect& out_box)
     std::vector<float> scores;
     std::vector<int> strides = {8, 16, 32};
 
-    // 3. 解码 (适配 Flattened Output)
+    // 3. Decode (adapted for flattened output).
     for (int stride : strides)
     {
         std::string layer_box = "bbox_" + std::to_string(stride);
@@ -82,62 +98,63 @@ bool YunetWrapper::detect(const cv::Mat& img, cv::Rect& out_box)
         const cv::Mat& cls_mat = out_map[layer_cls];
         const cv::Mat& obj_mat = out_map[layer_obj];
 
-        // 计算当前 stride 下原本应该有的 grid 尺寸
+        // Compute the expected grid size for the current stride.
         int grid_w = input_w_ / stride; // e.g., 640/8 = 80
         int grid_h = input_h_ / stride; // e.g., 640/8 = 80
         int num_anchors = grid_w * grid_h;
 
-        // 获取数据指针 (假定数据是 float 并且连续)
+        // Get data pointers (assume float and continuous storage).
         const float* ptr_box = (float*)box_mat.data;
         const float* ptr_cls = (float*)cls_mat.data;
         const float* ptr_obj = (float*)obj_mat.data;
 
-        // 自动检测维度布局
-        // 如果是 [1, C, H, W]，step 通常很大
-        // 如果是 [1, N, C]，step 通常是 C
-        // 这里我们采用最稳健的方法：按照总元素数量 num_anchors 遍历
-        // 并根据 total_size / num_anchors 算出每个 anchor 占用的步长
+        // Detect the tensor layout automatically.
+        // If the layout is [1, C, H, W], the step is usually large.
+        // If the layout is [1, N, C], the step is usually C.
+        // Use the most robust approach: iterate by the total number of anchors
+        // and derive the per-anchor stride from total_size / num_anchors.
         
         int total_elements_box = box_mat.total();
-        int step_box = total_elements_box / num_anchors; // 应该是 4
+        int step_box = total_elements_box / num_anchors; // Should be 4.
 
         int total_elements_cls = cls_mat.total();
-        int step_cls = total_elements_cls / num_anchors; // 应该是 classes数量
+        int step_cls = total_elements_cls / num_anchors; // Should be the class count.
 
         int total_elements_obj = obj_mat.total();
-        int step_obj = total_elements_obj / num_anchors; // 应该是 1
+        int step_obj = total_elements_obj / num_anchors; // Should be 1.
 
         for (int i = 0; i < num_anchors; i++)
         {
-            // 1. 计算当前 anchor 在 grid 中的逻辑坐标 (关键修正!)
+            // 1. Compute the anchor coordinates in the grid (critical fix).
             int grid_y = i / grid_w;
             int grid_x = i % grid_w;
 
-            // 2. 获取 Objectness
-            // 注意：如果 step_obj=1，则直接 ptr_obj[i]。如果是 NCHW 格式，这里逻辑可能不同，
-            // 但鉴于你的 log 报错，基本确定是 Flattened 格式 (N,1) 或 (1,N,1)
+            // 2. Read objectness.
+            // If step_obj == 1, ptr_obj[i] is used directly. For NCHW layouts this
+            // logic may differ, but the logs indicate a flattened layout (N,1) or (1,N,1).
             float obj_score = sigmoid(ptr_obj[i * step_obj]);
-            if (obj_score < 0.3f) continue;
+            if (obj_score < 0.1f) continue;
 
-            // 3. 获取 Class Score
-            // 假设我们只关心最大值
+            // 3. Read class scores and keep only the QR Code class (cls_id == 3).
             float max_cls_score = 0.f;
+            int argmax_cls = -1;
             for (int c = 0; c < step_cls; c++) {
                 float s = sigmoid(ptr_cls[i * step_cls + c]);
-                if (s > max_cls_score) max_cls_score = s;
+                if (s > max_cls_score) { max_cls_score = s; argmax_cls = c; }
             }
+            if (argmax_cls != 3) continue;  // Keep only the QR Code class.
 
             float final_score = max_cls_score * obj_score;
-            if (final_score < 0.3f) continue;
+            if (final_score < 0.02f) continue;
 
-            // 4. Decode Box
-            // 指针偏移：第 i 个 anchor，加上 0~3 的 offset
+            // 4. Decode the box.
+            // Pointer offset: anchor i plus offsets 0..3.
             float r0 = ptr_box[i * step_box + 0]; // x
             float r1 = ptr_box[i * step_box + 1]; // y
             float r2 = ptr_box[i * step_box + 2]; // w
             float r3 = ptr_box[i * step_box + 3]; // h
 
-            // 关键修正：这里必须使用 grid_x/grid_y，而不是循环变量 i
+            // Critical fix: use grid_x/grid_y here instead of the loop index i.
             float cx = (r0 * stride) + (grid_x * stride);
             float cy = (r1 * stride) + (grid_y * stride);
 
@@ -162,7 +179,7 @@ bool YunetWrapper::detect(const cv::Mat& img, cv::Rect& out_box)
 
     cv::Rect best_box_net = boxes[keep[0]];
 
-    // 5. 坐标还原
+    // 5. Map coordinates back to the original image.
     float x_final = (best_box_net.x - dw) / scale;
     float y_final = (best_box_net.y - dh) / scale;
     float w_final = best_box_net.width / scale;
@@ -175,7 +192,7 @@ bool YunetWrapper::detect(const cv::Mat& img, cv::Rect& out_box)
 
     out_box = cv::Rect(x1, y1, x2 - x1, y2 - y1);
     
-    // 增加一点鲁棒性
+    // Add a small robustness margin.
     return (out_box.width > 2 && out_box.height > 2);
 }
 
@@ -183,10 +200,10 @@ bool YunetWrapper::detect(const cv::Mat& img, cv::Rect& out_box)
 // ============================================================
 // detectMulti
 // ------------------------------------------------------------
-// 与 detect 完全一致的前处理 / decode / NMS
-// 唯一差异：
-//   1. NMS 后保留所有 keep 的框
-//   2. 每个框都做 inverse letterbox
+// Same preprocessing / decode / NMS as detect.
+// The only difference is:
+//   1. Keep all boxes after NMS.
+//   2. Apply inverse letterbox to every box.
 // ============================================================
 bool YunetWrapper::detectMulti(
     const cv::Mat& img,
@@ -197,7 +214,7 @@ bool YunetWrapper::detectMulti(
         return false;
 
     // ----------------------------
-    // 1. Letterbox 预处理（与 detect 完全一致）
+    // 1. Letterbox preprocessing (same as detect).
     // ----------------------------
     int w = img.cols;
     int h = img.rows;
@@ -237,7 +254,7 @@ bool YunetWrapper::detectMulti(
     net_.setInput(blob);
 
     // ----------------------------
-    // 2. 推理
+    // 2. Inference.
     // ----------------------------
     std::vector<cv::Mat> outs;
     net_.forward(outs, out_names_);
@@ -252,7 +269,7 @@ bool YunetWrapper::detectMulti(
     std::vector<int> strides = {8, 16, 32};
 
     // ----------------------------
-    // 3. Decode（与 detect 完全相同）
+    // 3. Decode (same as detect).
     // ----------------------------
     for (int stride : strides)
     {
@@ -285,17 +302,19 @@ bool YunetWrapper::detectMulti(
             int grid_x = i % grid_w;
 
             float obj_score = sigmoid(ptr_obj[i * step_obj]);
-            if (obj_score < 0.3f) continue;
+            if (obj_score < 0.02f) continue;
 
+            // Keep only the QR Code class (cls_id == 3).
             float max_cls_score = 0.f;
+            int argmax_cls = -1;
             for (int c = 0; c < step_cls; c++) {
                 float s = sigmoid(ptr_cls[i * step_cls + c]);
-                if (s > max_cls_score)
-                    max_cls_score = s;
+                if (s > max_cls_score) { max_cls_score = s; argmax_cls = c; }
             }
+            if (argmax_cls != 3) continue;
 
             float final_score = max_cls_score * obj_score;
-            if (final_score < 0.3f) continue;
+            if (final_score < 0.1f) continue;
 
             float r0 = ptr_box[i * step_box + 0];
             float r1 = ptr_box[i * step_box + 1];
@@ -322,26 +341,26 @@ bool YunetWrapper::detectMulti(
         return false;
 
     // ----------------------------
-    // 4. NMS（保留全部 keep）
+    // 4. NMS (keep all selected boxes).
     // ----------------------------
     std::vector<int> keep = nms(boxes, scores, 0.45f);
     if (keep.empty())
         return false;
 
-    const int MAX_BOXES = 10;
+    const int MAX_BOXES = 500;
 
-    // 按 score 从高到低排序 keep
+    // Sort keep by score in descending order.
     std::sort(keep.begin(), keep.end(),
             [&](int a, int b) {
                 return scores[a] > scores[b];
             });
 
-    // 如果超过 10 个，只保留前 10 个
+    // Keep at most 500 boxes.
     if ((int)keep.size() > MAX_BOXES)
         keep.resize(MAX_BOXES);
 
     // ----------------------------
-    // 5. 所有框做 inverse letterbox
+    // 5. Apply inverse letterbox to all boxes.
     // ----------------------------
     for (int idx : keep)
     {
