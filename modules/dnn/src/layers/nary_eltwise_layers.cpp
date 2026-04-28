@@ -3,6 +3,7 @@
 // of this distribution and at http://opencv.org/license.html.
 
 #include "../precomp.hpp"
+#include "../net_impl.hpp"
 #include "layers_common.hpp"
 #include "../op_cuda.hpp"
 #include "../op_cann.hpp"
@@ -10,6 +11,7 @@
 #include "../op_vkcom.hpp"
 
 #include <opencv2/dnn/shape_utils.hpp>
+#include "opencv2/core/hal/intrin.hpp"
 
 #include <algorithm>
 #include <iterator>
@@ -117,8 +119,6 @@ public:
                 assert(st_i % elemsize[k] == 0);
                 this->shapes[k][i] = sz_i;
                 this->steps[k][i] = st_i;
-                if (this->shapes[k][i] == 0)
-                    return false;
             }
         }
 
@@ -172,39 +172,12 @@ class NaryEltwiseLayerImpl CV_FINAL : public NaryEltwiseLayer
 {
     NaryEltwiseHelper helper;
 public:
-    enum class OPERATION
-    {
-        AND = 0,
-        EQUAL,
-        GREATER,
-        GREATER_EQUAL,
-        LESS,
-        LESS_EQUAL,
-        OR,
-        POW,
-        XOR,
-        BITSHIFT,
-        MAX,
-        MEAN,
-        MIN,
-        MOD,  // Integer Mod. Reminder's sign = Divisor's sign.
-        FMOD, // Floating-point Mod. Reminder's sign = Dividend's sign.
-        PROD,
-        SUB,
-        SUM,
-        ADD,
-        DIV,
-        WHERE,
-        BITWISE_AND,
-        BITWISE_OR,
-        BITWISE_XOR,
-    } op;
+    std::string operation;
 
     NaryEltwiseLayerImpl(const LayerParams& params)
     {
         setParamsFrom(params);
-
-        String operation = toLowerCase(params.get<String>("operation", "sum"));
+        operation = toLowerCase(params.get<String>("operation", "sum"));
 
         if (operation == "equal")
             op = OPERATION::EQUAL;
@@ -258,6 +231,13 @@ public:
             CV_Error(cv::Error::StsBadArg, "Unknown operation type \"" + operation + "\"");
     }
 
+    virtual std::ostream& dumpAttrs(std::ostream& strm, int indent) const CV_OVERRIDE
+    {
+        prindent(strm, indent);
+        strm << "operation: \"" << operation << "\",\n";
+        return strm;
+    }
+
     virtual bool supportBackend(int backendId) CV_OVERRIDE
     {
 #ifdef HAVE_CANN
@@ -296,34 +276,45 @@ public:
         return backendId == DNN_BACKEND_OPENCV;
     }
 
-    static MatShape findCommonShape(std::vector<MatShape> shapes)
+    // [TODO] move it to MatShape
+    static MatShape findCommonShape(const std::vector<MatShape>& shapes)
     {
-        CV_Assert(!shapes.empty());
-        const size_t dim = std::max_element(shapes.begin(), shapes.end(),
-                                            [](const MatShape& a, const MatShape& b)
-                                            { return a.size() < b.size(); })->size();
+        size_t i, ninputs = shapes.size();
+        CV_Assert(ninputs > 0u);
 
-        for (auto& shape : shapes)
-        {
-            shape.insert(shape.begin(), dim - shape.size(), 1);
+        int C0 = shapes[0].C, dims0 = shapes[0].dims, maxdims = dims0;
+        bool constC = true;
+        bool allBlock = true;
+        bool constDims = true;
+        for (i = 0; i < ninputs; i++) {
+            const MatShape& inpShape = shapes[i];
+            int dims = inpShape.dims;
+            allBlock = allBlock && inpShape.layout == DATA_LAYOUT_BLOCK;
+            constC = constC && inpShape.C == C0;
+            constDims = constDims && dims == dims0;
+            maxdims = std::max(maxdims, dims);
         }
 
-        MatShape outShape(dim, 1);
-        for (size_t i = 0; i < dim; ++i)
+        MatShape outShape(maxdims, 1);
+        if (allBlock && constC && constDims) {
+            outShape.layout = DATA_LAYOUT_BLOCK;
+            outShape.C = C0;
+        }
+
+        for (i = 0; i < ninputs; i++)
         {
-            for (const auto& shape : shapes)
-            {
-                if (shape[i] != outShape[i])
-                {
-                    CV_Assert(shape[i] == 1 || outShape[i] == 1);
-                    outShape[i] = std::max(outShape[i], shape[i]);
-                }
+            const MatShape& inpShape = shapes[i];
+            int dims = inpShape.dims, delta = maxdims - dims;
+            for (int j = 0; j < maxdims; j++) {
+                int inpsz = j < delta ? 1 : inpShape[j - delta];
+                int outsz = outShape[j];
+                CV_Assert(inpsz == outsz || inpsz == 1 || outsz == 1);
+                outShape[j] = inpsz != 1 ? inpsz : outsz;
             }
         }
 
         return outShape;
     }
-
 
     virtual void finalize(InputArrayOfArrays inputs_arr, OutputArrayOfArrays outputs_arr) CV_OVERRIDE {
         std::vector<Mat> inputs, outputs;
@@ -429,6 +420,34 @@ public:
             outputs.assign(requiredOutputs, inputs[0]);
     }
 
+    int getLayouts(const std::vector<DataLayout>& actualInputs,
+                   std::vector<DataLayout>& desiredInputs,
+                   const int requiredOutputs,
+                   std::vector<DataLayout>& outputs) const CV_OVERRIDE
+    {
+        auto* netimpl_ = getNetImpl(this);
+        DataLayout defaultLayout = netimpl_->originalLayout;
+        size_t ninputs = actualInputs.size(), nblockInputs = 0;
+        CV_Assert(ninputs >= 1u);
+        for (size_t i = 0; i < ninputs; i++) {
+            DataLayout layout = actualInputs[i];
+            nblockInputs += layout == DATA_LAYOUT_BLOCK;
+        }
+
+        desiredInputs = actualInputs;
+        if (nblockInputs == ninputs) {
+            outputs.assign(requiredOutputs, DATA_LAYOUT_BLOCK);
+        } else {
+            if (nblockInputs < ninputs) {
+                for (size_t i = 0; i < ninputs; i++) {
+                    DataLayout layout = actualInputs[i];
+                    desiredInputs[i] = layout == DATA_LAYOUT_BLOCK ? defaultLayout : layout;
+                }
+            }
+            outputs.assign(requiredOutputs, DATA_LAYOUT_UNKNOWN);
+        }
+        return outputs[0] == DATA_LAYOUT_BLOCK ? netimpl_->defaultC0 : 0;
+    }
 
     template <typename T, typename RESULT_T, typename Functor>
     void binary_forward_impl(const Functor& op, int ndims, const std::vector<int>& shape,
@@ -450,13 +469,70 @@ public:
             }
         }
 
+    #if CV_SIMD
+        // Fast path: fully contiguous float Add → flatten + SIMD + parallel_for_
+        bool is_add = (this->op == OPERATION::SUM || this->op == OPERATION::ADD);
+        if (is_add && std::is_same<T, float>::value && std::is_same<RESULT_T, float>::value &&
+            dp1 == 1 && dp2 == 1 && dp == 1 && ndims >= 1) {
+            bool contiguous = true;
+            for (int k = ndims - 2; k >= 0; k--) {
+                if (shape[k] <= 1) continue; // size-1 dims have stride 0, skip
+                size_t expected = (size_t)shape[k + 1] * step1[k + 1];
+                if (step1[k] != expected || step2[k] != expected || step[k] != expected) {
+                    contiguous = false;
+                    break;
+                }
+            }
+            if (contiguous) {
+                int64_t total = (int64_t)nplanes * plane_size;
+                const float* p1 = (const float*)data1;
+                const float* p2 = (const float*)data2;
+                float* po = (float*)data;
+                const int64_t chunk = 1024;
+                int64_t nchunks = (total + chunk - 1) / chunk;
+                parallel_for_(Range(0, (int)nchunks), [&](const Range& r) {
+                    for (int c = r.start; c < r.end; c++) {
+                        int64_t start = c * chunk;
+                        int64_t end = std::min(start + chunk, total);
+                        int64_t i = start;
+                        for (; i <= end - (int64_t)VTraits<v_float32>::nlanes * 4; i += VTraits<v_float32>::nlanes * 4) {
+                            v_store(po + i, v_add(vx_load(p1 + i), vx_load(p2 + i)));
+                            v_store(po + i + VTraits<v_float32>::nlanes, v_add(vx_load(p1 + i + VTraits<v_float32>::nlanes), vx_load(p2 + i + VTraits<v_float32>::nlanes)));
+                            v_store(po + i + VTraits<v_float32>::nlanes*2, v_add(vx_load(p1 + i + VTraits<v_float32>::nlanes*2), vx_load(p2 + i + VTraits<v_float32>::nlanes*2)));
+                            v_store(po + i + VTraits<v_float32>::nlanes*3, v_add(vx_load(p1 + i + VTraits<v_float32>::nlanes*3), vx_load(p2 + i + VTraits<v_float32>::nlanes*3)));
+                        }
+                        for (; i < end; i++)
+                            po[i] = p1[i] + p2[i];
+                    }
+                });
+                return;
+            }
+        }
+    #endif
+
         if (nplanes == 1) { // parallelize within the plane
             const T* ptr1 = (const T*)data1;
             const T* ptr2 = (const T*)data2;
             RESULT_T* ptr = (RESULT_T*)data;
             auto worker = [&](const Range &r) {
                 if (dp1 == 1 && dp2 == 1 && dp == 1) {
-                    for(int i = r.start; i < r.end; i++) {
+                    int i = r.start;
+                #if CV_SIMD
+                    if (is_add && std::is_same<T, float>::value && std::is_same<RESULT_T, float>::value) {
+                        const float* p1 = (const float*)(const void*)&ptr1[r.start];
+                        const float* p2 = (const float*)(const void*)&ptr2[r.start];
+                        float* po = (float*)(void*)&ptr[r.start];
+                        int len = r.end - r.start, j = 0;
+                        for (; j <= len - VTraits<v_float32>::nlanes * 4; j += VTraits<v_float32>::nlanes * 4) {
+                            v_store(po + j, v_add(vx_load(p1 + j), vx_load(p2 + j)));
+                            v_store(po + j + VTraits<v_float32>::nlanes, v_add(vx_load(p1 + j + VTraits<v_float32>::nlanes), vx_load(p2 + j + VTraits<v_float32>::nlanes)));
+                            v_store(po + j + VTraits<v_float32>::nlanes*2, v_add(vx_load(p1 + j + VTraits<v_float32>::nlanes*2), vx_load(p2 + j + VTraits<v_float32>::nlanes*2)));
+                            v_store(po + j + VTraits<v_float32>::nlanes*3, v_add(vx_load(p1 + j + VTraits<v_float32>::nlanes*3), vx_load(p2 + j + VTraits<v_float32>::nlanes*3)));
+                        }
+                        i = r.start + j;
+                    }
+                #endif
+                    for(; i < r.end; i++) {
                         ptr[i] = op(ptr1[i], ptr2[i]);
                     }
                 } else if (dp1 == 1 && dp2 == 0 && dp == 1){
@@ -498,7 +574,21 @@ public:
                     const T* ptr2 = (const T*)ptr2_;
                     RESULT_T* ptr = (RESULT_T*)ptr_;
                     if (dp1 == 1 && dp2 == 1 && dp == 1) {
-                        for(int i = 0; i < plane_size; i++) {
+                        int i = 0;
+                    #if CV_SIMD
+                        if (is_add && std::is_same<T, float>::value && std::is_same<RESULT_T, float>::value) {
+                            const float* p1 = (const float*)(const void*)ptr1;
+                            const float* p2 = (const float*)(const void*)ptr2;
+                            float* po = (float*)(void*)ptr;
+                            for (; i <= plane_size - VTraits<v_float32>::nlanes * 4; i += VTraits<v_float32>::nlanes * 4) {
+                                v_store(po + i, v_add(vx_load(p1 + i), vx_load(p2 + i)));
+                                v_store(po + i + VTraits<v_float32>::nlanes, v_add(vx_load(p1 + i + VTraits<v_float32>::nlanes), vx_load(p2 + i + VTraits<v_float32>::nlanes)));
+                                v_store(po + i + VTraits<v_float32>::nlanes*2, v_add(vx_load(p1 + i + VTraits<v_float32>::nlanes*2), vx_load(p2 + i + VTraits<v_float32>::nlanes*2)));
+                                v_store(po + i + VTraits<v_float32>::nlanes*3, v_add(vx_load(p1 + i + VTraits<v_float32>::nlanes*3), vx_load(p2 + i + VTraits<v_float32>::nlanes*3)));
+                            }
+                        }
+                    #endif
+                        for(; i < plane_size; i++) {
                             ptr[i] = op(ptr1[i], ptr2[i]);
                         }
                     } else if (dp1 == 1 && dp2 == 0 && dp == 1){
@@ -531,6 +621,12 @@ public:
         const Mat& a = inputs[0];
         const Mat& b = inputs[1];
         Mat& out = outputs[0];
+
+        if (op == OPERATION::POW && std::is_same<T, RESULT_T>::value && b.total() == 1) {
+            cv::pow(a, (double)(*(const T*)b.data), out);
+            return;
+        }
+
         CV_Assert(helper.shapes.size() == 3 && helper.steps.size() == 3);
         binary_forward_impl<T, RESULT_T, Functor>(f, helper.max_ndims, helper.shapes[0], a.ptr<char>(), helper.steps[1],
                                         b.ptr<char>(), helper.steps[2], out.ptr<char>(), helper.steps[0], block_size);
@@ -548,8 +644,8 @@ public:
         int nplanes = std::accumulate(shape.begin(), shape.end() - 1, 1, std::multiplies<int>());
 
         if (nplanes == 1) { // parallelize within the plane
-            AutoBuffer<char> buf_ptrs(steps.size());
-            auto ptrs = (char**)buf_ptrs.data();
+            AutoBuffer<char*> buf_ptrs(steps.size());
+            char** ptrs = buf_ptrs.data();
             ptrs[0] = out;
             for (int i = 0; i < ninputs; i++) {
                 ptrs[i+1] = (char*)inp[i];
@@ -594,8 +690,8 @@ public:
             parallel_for_(Range(0, plane_size), worker, nstripes);
         } else { // parallelize across the plane
             auto worker = [&](const Range &r) {
-                AutoBuffer<char> buf_ptrs(steps.size());
-                auto ptrs = (char**)buf_ptrs.data();
+                AutoBuffer<char*> buf_ptrs(steps.size());
+                char** ptrs = buf_ptrs.data();
                 for (int plane_idx = r.start; plane_idx < r.end; plane_idx++) {
                     ptrs[0] = out;
                     for (int i = 0; i < ninputs; i++) ptrs[i+1] = (char*)inp[i];
@@ -1318,7 +1414,7 @@ public:
             node = std::make_shared<ov::op::v1::Select>(inp0, inp1, inp2);
         }
         // Ideally we should do this but int32 internal blobs are converted to float32 data type in inference.
-        // TODO: Remove data type convertion when we have type inference.
+        // TODO: Remove data type conversion when we have type inference.
         else if (op == OPERATION::MOD) {
             auto inp0_i64 = std::make_shared<ov::op::v0::Convert>(inp0, ov::element::i64);
             auto inp1_i64 = std::make_shared<ov::op::v0::Convert>(inp1, ov::element::i64);

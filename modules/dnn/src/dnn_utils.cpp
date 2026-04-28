@@ -187,7 +187,7 @@ void blobFromImagesNCHWImpl(const std::vector<Mat>& images, Mat& blob_, const Im
 
     if (param.mean == Scalar() && param.scalefactor == Scalar::all(1.0))
         return;
-    CV_CheckTypeEQ(param.ddepth, CV_32F, "Scaling and mean substraction is supported only for CV_32F blob depth");
+    CV_CheckTypeEQ(param.ddepth, CV_32F, "Scaling and mean subtraction is supported only for CV_32F blob depth");
 
     for (size_t k = 0; k < images.size(); ++k)
     {
@@ -228,7 +228,7 @@ void blobFromImagesNCHW(const std::vector<Mat>& images, Mat& blob_, const Image2
 template<typename Tout>
 void blobFromImagesNCHW(const std::vector<UMat>& images, UMat& blob_, const Image2BlobParams& param)
 {
-    CV_Error(Error::StsNotImplemented, "");
+    CV_Error(Error::StsNotImplemented, "blobFromImagesNCHW is not implemented for UMat inputs");
 }
 
 template<class Tmat>

@@ -118,6 +118,13 @@ public:
             net.setInput(inps[i], inputNames[i]);
         Mat out = net.forward("");
 
+        MatShape outShape = shape(out);
+        MatShape refShape = shape(ref);
+        bool scalar1dCompatible =
+            (outShape.isScalar() && refShape.size() == 1 && refShape[0] == 1) ||
+            (refShape.isScalar() && outShape.size() == 1 && outShape[0] == 1);
+        EXPECT_TRUE(outShape == refShape || scalar1dCompatible);
+
         if (useSoftmax)
         {
             LayerParams lp;
@@ -1131,12 +1138,13 @@ TEST_P(Test_ONNX_layers, ResizeUnfusedTwoInputs)
 #if defined(INF_ENGINE_RELEASE) && INF_ENGINE_VER_MAJOR_LT(2023000000)
     if (backend == DNN_BACKEND_INFERENCE_ENGINE_NN_BUILDER_2019)
         applyTestTag(CV_TEST_TAG_DNN_SKIP_IE_NN_BUILDER);
+#endif
+#ifdef HAVE_INF_ENGINE
     if (backend == DNN_BACKEND_INFERENCE_ENGINE_NGRAPH)
         applyTestTag(CV_TEST_TAG_DNN_SKIP_IE_NGRAPH);
 #endif
     testONNXModels("upsample_unfused_two_inputs_opset9_torch1.4", npy, 0, 0, false, true, 2);
-    // BUG: https://github.com/opencv/opencv/issues/26291
-    // testONNXModels("upsample_unfused_two_inputs_opset11_torch1.4", npy, 0, 0, false, true, 2);
+    testONNXModels("upsample_unfused_two_inputs_opset11_torch1.4", npy, 0, 0, false, true, 2);
 }
 
 TEST_P(Test_ONNX_layers, MultyInputs)
@@ -1169,6 +1177,11 @@ TEST_P(Test_ONNX_layers, DynamicResize)
 TEST_P(Test_ONNX_layers, Resize_HumanSeg)
 {
     testONNXModels("resize_humanseg");
+}
+
+TEST_P(Test_ONNX_layers, Resample)
+{
+    testONNXModels("nearest", npy, 0, 0, false, false);
 }
 
 TEST_P(Test_ONNX_layers, Div)
@@ -1207,6 +1220,7 @@ TEST_P(Test_ONNX_layers, DynamicReshape)
     testONNXModels("dynamic_reshape_opset_11");
     testONNXModels("flatten_by_prod");
     testONNXModels("flatten_const");
+    testONNXModels("flatten_axis_numaxes");
 }
 
 TEST_P(Test_ONNX_layers, Reshape)
@@ -1226,6 +1240,7 @@ TEST_P(Test_ONNX_layers, Squeeze)
         applyTestTag(CV_TEST_TAG_DNN_SKIP_IE_MYRIAD, CV_TEST_TAG_DNN_SKIP_IE_NN_BUILDER);
     testONNXModels("squeeze");
     testONNXModels("squeeze_axes_op13");
+    testONNXModels("squeeze_no_axes");
 }
 
 TEST_P(Test_ONNX_layers, ReduceL2)
@@ -2283,6 +2298,31 @@ TEST_P(Test_ONNX_layers, QLinearSoftmax)
     testONNXModels("qlinearsoftmax_v13", npy, 0.002, 0.002);
 }
 
+TEST_P(Test_ONNX_layers, PriorBox_ONNX)
+{
+    Net net = readNetFromONNX(_tf("models/prior_box.onnx"));
+    ASSERT_FALSE(net.empty());
+    int inp_size[] = {1, 3, 10, 10};
+    int shape_size[] = {1, 2, 3, 4};
+    Mat inp(4, inp_size, CV_32F, Scalar(0));
+    Mat shape(4, shape_size, CV_32F, Scalar(0));
+    net.setInput(inp, "input_0");
+    net.setInput(shape, "input_1");
+    net.setPreferableBackend(backend);
+    net.setPreferableTarget(target);
+    Mat out = net.forward();
+    Mat ref = blobFromNPY(_tf("data/output_prior_box.npy"));
+
+    double l1 = (target == DNN_TARGET_OPENCL_FP16 || target == DNN_TARGET_MYRIAD) ? 1e-3 : 1e-5;
+    double lInf = (target == DNN_TARGET_OPENCL_FP16 || target == DNN_TARGET_MYRIAD) ? 1e-3 : 1e-4;
+    if (target == DNN_TARGET_CUDA_FP16)
+    {
+        l1 = 7e-5;
+        lInf = 0.0005;
+    }
+    normAssert(out, ref, "", l1, lInf);
+}
+
 INSTANTIATE_TEST_CASE_P(/*nothing*/, Test_ONNX_layers, dnnBackendsAndTargets());
 
 class Test_ONNX_nets : public Test_ONNX_layers
@@ -2553,6 +2593,12 @@ TEST_P(Test_ONNX_nets, MobileNet_v2)
 TEST_P(Test_ONNX_nets, MobileNet_v2_FP16)
 {
     testONNXModels("mobilenetv2_fp16", npy, default_l1, default_lInf, true);
+}
+
+TEST_P(Test_ONNX_nets, MobileNet_v4)
+{
+    required = true;
+    testONNXModels("mobilenetv4", npy, default_l1, default_lInf, true);
 }
 
 TEST_P(Test_ONNX_nets, LResNet100E_IR)
@@ -3463,6 +3509,49 @@ TEST_P(Test_ONNX_layers, TopK) {
     test("top_k");
     test("top_k_negative_axis");
     test("top_k_smallest");
+}
+
+TEST_P(Test_ONNX_layers, RandomNormalLike_basic)
+{
+    Net net = readNetFromONNX(findDataFile("dnn/onnx/models/random_normal_like.onnx", true));
+
+    Mat input(2, 3, CV_32F, Scalar(0));
+    net.setInput(input);
+    Mat out = net.forward();
+
+    EXPECT_EQ(out.rows, 2);
+    EXPECT_EQ(out.cols, 3);
+    EXPECT_EQ(out.type(), CV_32F);
+
+    double minVal, maxVal;
+    minMaxLoc(out, &minVal, &maxVal);
+    EXPECT_NE(minVal, 0.0);
+    EXPECT_NE(maxVal, 0.0);
+    EXPECT_NE(minVal, maxVal);
+
+    Mat out2 = net.forward();
+    EXPECT_EQ(countNonZero(out != out2), 0);
+}
+
+TEST_P(Test_ONNX_layers, RandomNormalLike_complex)
+{
+    Net net = readNetFromONNX(findDataFile("dnn/onnx/models/random_normal_like_complex.onnx", true));
+
+    Mat input(2, 3, CV_32F, Scalar(0));
+    net.setInput(input);
+    Mat out = net.forward();
+
+    EXPECT_EQ(out.rows, 2);
+    EXPECT_EQ(out.cols, 3);
+    EXPECT_EQ(out.type(), CV_32F);
+
+    double minVal, maxVal;
+    minMaxLoc(out, &minVal, &maxVal);
+    EXPECT_NE(minVal, maxVal);
+
+    net.setInput(input);
+    Mat out2 = net.forward();
+    EXPECT_EQ(countNonZero(out != out2), 0);
 }
 
 INSTANTIATE_TEST_CASE_P(/**/, Test_ONNX_nets, dnnBackendsAndTargets());

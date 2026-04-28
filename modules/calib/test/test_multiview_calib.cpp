@@ -334,7 +334,6 @@ TEST_F(MultiViewTest, OneLine)
 
 TEST_F(MultiViewTest, OneLineInitialGuess)
 {
-    applyTestTag(CV_TEST_TAG_VERYLONG);
     const string root = cvtest::TS::ptr()->get_data_path() + "cv/cameracalibration/multiview/3cams-one-line/";
     const std::vector<std::string> cam_names = {"cam_0", "cam_1", "cam_3"};
     const std::vector<cv::Size> image_sizes = {{1920, 1080}, {1920, 1080}, {1920, 1080} };
@@ -440,7 +439,6 @@ TEST_F(MultiViewTest, OneLineInitialGuess)
 
 TEST_F(MultiViewTest, CamsToFloor)
 {
-    applyTestTag(CV_TEST_TAG_VERYLONG);
     const string root = cvtest::TS::ptr()->get_data_path() + "cv/cameracalibration/multiview/3cams-to-floor/";
     const std::vector<std::string> cam_names = {"cam_0", "cam_1", "cam_2"};
     std::vector<cv::Size> image_sizes = {{1920, 1080}, {1920, 1080}, {1280, 720}};
@@ -508,7 +506,6 @@ TEST_F(MultiViewTest, CamsToFloor)
 
 TEST_F(MultiViewTest, Hetero)
 {
-    applyTestTag(CV_TEST_TAG_VERYLONG);
     const string root = cvtest::TS::ptr()->get_data_path() + "cv/cameracalibration/multiview/3cams-hetero/";
     const std::vector<std::string> cam_names = {"cam_7", "cam_4", "cam_8"};
     std::vector<cv::Size> image_sizes = {{1920, 1080}, {1920, 1080}, {2048, 2048}};

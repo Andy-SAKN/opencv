@@ -6,9 +6,256 @@
 
 #include "net_impl.hpp"
 
+#include <limits>
+
+#ifdef HAVE_ONNXRUNTIME
+#include <onnxruntime_cxx_api.h>
+#endif
+
 namespace cv {
 namespace dnn {
 CV__DNN_INLINE_NS_BEGIN
+
+#ifdef HAVE_ONNXRUNTIME
+struct OrtNamesCache
+{
+    std::vector<std::string> input_names;
+    std::vector<std::string> output_names;
+    std::unordered_map<std::string, int> input_name_to_index;
+    std::unordered_map<std::string, int> output_name_to_index;
+
+    explicit OrtNamesCache(Ort::Session& session)
+    {
+        Ort::AllocatorWithDefaultOptions allocator;
+
+        const size_t ninputs = session.GetInputCount();
+        input_names.reserve(ninputs);
+        for (size_t i = 0; i < ninputs; ++i)
+        {
+            Ort::AllocatedStringPtr in = session.GetInputNameAllocated(i, allocator);
+            std::string n = in ? std::string(in.get()) : std::string();
+            input_name_to_index[n] = (int)i;
+            input_names.push_back(std::move(n));
+        }
+
+        const size_t noutputs = session.GetOutputCount();
+        output_names.reserve(noutputs);
+        for (size_t i = 0; i < noutputs; ++i)
+        {
+            Ort::AllocatedStringPtr out = session.GetOutputNameAllocated(i, allocator);
+            std::string n = out ? std::string(out.get()) : std::string();
+            output_name_to_index[n] = (int)i;
+            output_names.push_back(std::move(n));
+        }
+    }
+};
+#endif
+
+#ifdef HAVE_ONNXRUNTIME
+void Net::Impl::applyStagedOrtInputs()
+{
+    if (!ort_session || ort_staged_inputs.empty())
+        return;
+
+    if (!ort_names_cache)
+        ort_names_cache = std::make_shared<OrtNamesCache>(*ort_session);
+
+    OrtNamesCache& names = *ort_names_cache;
+    const size_t ninputs = names.input_names.size();
+    if (ninputs == 0)
+        CV_Error(Error::StsError, "DNN/ORT: ORT session has no inputs");
+
+    if (!netInputLayer)
+    {
+        netInputLayer = Ptr<DataLayer>(new DataLayer());
+        netInputLayer->name = "ort_data_layer";
+        netInputLayer->type = "Data";
+    }
+    if (netInputLayer->blobs.size() != ninputs)
+        netInputLayer->blobs.resize(ninputs);
+
+    for (size_t k = 0; k < ort_staged_inputs.size(); ++k)
+    {
+        const std::string& inpname = ort_staged_inputs[k].first;
+        const Mat& inputMat = ort_staged_inputs[k].second;
+        if (inputMat.empty())
+            CV_Error(Error::StsBadArg, "DNN/ORT: Input blob is empty");
+
+        size_t inputIdx = 0;
+        if (inpname.empty())
+        {
+            if (ninputs != 1)
+                CV_Error(Error::StsBadArg, "DNN/ORT: input name must be specified for models with multiple inputs");
+            inputIdx = 0;
+        }
+        else
+        {
+            auto it = names.input_name_to_index.find(inpname);
+            if (it == names.input_name_to_index.end())
+                CV_Error_(Error::StsObjectNotFound, ("DNN/ORT: input '%s' is not found", inpname.c_str()));
+            inputIdx = (size_t)it->second;
+        }
+        inputMat.copyTo(netInputLayer->blobs[inputIdx]);
+    }
+    ort_staged_inputs.clear();
+}
+
+static int cvTypeFromONNXElemType(const ONNXTensorElementDataType t)
+{
+    switch (t)
+    {
+    case ONNX_TENSOR_ELEMENT_DATA_TYPE_FLOAT:   return CV_32F;
+    case ONNX_TENSOR_ELEMENT_DATA_TYPE_UINT8:   return CV_8U;
+    case ONNX_TENSOR_ELEMENT_DATA_TYPE_INT8:    return CV_8S;
+    case ONNX_TENSOR_ELEMENT_DATA_TYPE_UINT16:  return CV_16U;
+    case ONNX_TENSOR_ELEMENT_DATA_TYPE_INT16:   return CV_16S;
+    case ONNX_TENSOR_ELEMENT_DATA_TYPE_INT32:   return CV_32S;
+    case ONNX_TENSOR_ELEMENT_DATA_TYPE_INT64:   return CV_64S;
+    case ONNX_TENSOR_ELEMENT_DATA_TYPE_BOOL:    return CV_8U;
+    case ONNX_TENSOR_ELEMENT_DATA_TYPE_DOUBLE:  return CV_64F;
+    case ONNX_TENSOR_ELEMENT_DATA_TYPE_FLOAT16: return CV_16F;
+    case ONNX_TENSOR_ELEMENT_DATA_TYPE_BFLOAT16:return CV_16BF;
+    case ONNX_TENSOR_ELEMENT_DATA_TYPE_UINT32:  return CV_32U;
+    case ONNX_TENSOR_ELEMENT_DATA_TYPE_UINT64:  return CV_64U;
+    default:
+        return -1;
+    }
+}
+
+static Ort::Value createOrtTensorFromMat(Ort::Session& session,
+                                        size_t inputIdx,
+                                        const Ort::MemoryInfo& memory_info,
+                                        Mat& inputBlob,
+                                        std::vector<int64_t>& inputDims,
+                                        ONNXTensorElementDataType& in_elem_type)
+{
+    Ort::TypeInfo in_type_info = session.GetInputTypeInfo(inputIdx);
+    Ort::ConstTensorTypeAndShapeInfo in_tensor_info = in_type_info.GetTensorTypeAndShapeInfo();
+    in_elem_type = in_tensor_info.GetElementType();
+
+    const int cvInType = cvTypeFromONNXElemType(in_elem_type);
+    if (cvInType < 0)
+        CV_Error_(Error::StsNotImplemented, ("DNN/ORT: unsupported ORT input element type: %d", (int)in_elem_type));
+
+    if (inputBlob.type() != cvInType)
+        inputBlob.convertTo(inputBlob, cvInType);
+
+    if (!inputBlob.isContinuous())
+        inputBlob = inputBlob.clone();
+
+    inputDims.clear();
+    inputDims.reserve((size_t)inputBlob.dims);
+    for (int i = 0; i < inputBlob.dims; i++)
+        inputDims.push_back((int64_t)inputBlob.size[i]);
+
+    const size_t nbytes = (size_t)inputBlob.total() * inputBlob.elemSize();
+    OrtValue* input_tensor_raw = nullptr;
+    Ort::ThrowOnError(Ort::GetApi().CreateTensorWithDataAsOrtValue(
+        memory_info,
+        inputBlob.data,
+        nbytes,
+        inputDims.data(),
+        inputDims.size(),
+        in_elem_type,
+        &input_tensor_raw));
+    return Ort::Value(input_tensor_raw);
+}
+
+std::vector<Mat> Net::Impl::runOrtSession(std::vector<Mat> inputBlobs, const std::vector<int>& outIdxs)
+{
+    CV_Assert(this->ort_session);
+    Ort::Session& session = *this->ort_session;
+
+    if (!this->ort_names_cache)
+        this->ort_names_cache = std::make_shared<OrtNamesCache>(session);
+
+    OrtNamesCache& names = *this->ort_names_cache;
+    if (names.input_names.empty())
+        CV_Error(Error::StsError, "DNN/ORT: ORT session has no inputs");
+    if (names.output_names.empty())
+        CV_Error(Error::StsError, "DNN/ORT: ORT session has no outputs");
+
+    const size_t ninputs = names.input_names.size();
+    if (inputBlobs.size() != ninputs)
+        CV_Error_(Error::StsBadArg, ("DNN/ORT: expected %zu inputs, but got %zu", ninputs, inputBlobs.size()));
+
+    std::vector<const char*> in_names;
+    in_names.reserve(ninputs);
+    for (size_t i = 0; i < ninputs; ++i)
+        in_names.push_back(names.input_names[i].c_str());
+
+    std::vector<const char*> out_names;
+    if (outIdxs.empty())
+    {
+        out_names.reserve(names.output_names.size());
+        for (const std::string& n : names.output_names)
+            out_names.push_back(n.c_str());
+    }
+    else
+    {
+        out_names.reserve(outIdxs.size());
+        for (int idx : outIdxs)
+        {
+            CV_CheckGE(idx, 0, "DNN/ORT: output index must be non-negative");
+            CV_CheckLT((size_t)idx, names.output_names.size(), "DNN/ORT: output index is out of range");
+            out_names.push_back(names.output_names[(size_t)idx].c_str());
+        }
+    }
+
+    static const Ort::MemoryInfo memory_info =
+        Ort::MemoryInfo::CreateCpu(OrtDeviceAllocator, OrtMemTypeCPU);
+
+    std::vector<Ort::Value> input_tensors;
+    input_tensors.reserve(ninputs);
+    for (size_t i = 0; i < ninputs; ++i)
+    {
+        if (inputBlobs[i].empty())
+            CV_Error_(Error::StsError, ("DNN/ORT: input '%s' is empty", names.input_names[i].c_str()));
+
+        std::vector<int64_t> inputDims;
+        ONNXTensorElementDataType in_elem_type = ONNX_TENSOR_ELEMENT_DATA_TYPE_UNDEFINED;
+        input_tensors.push_back(createOrtTensorFromMat(session, i, memory_info, inputBlobs[i], inputDims, in_elem_type));
+    }
+
+    std::vector<Ort::Value> output_tensors = session.Run(
+        Ort::RunOptions{nullptr},
+        in_names.data(), input_tensors.data(), input_tensors.size(),
+        out_names.data(), out_names.size());
+
+    CV_CheckEQ(output_tensors.size(), out_names.size(), "DNN/ORT: ORT returned unexpected number of outputs");
+
+    std::vector<Mat> results;
+    results.reserve(output_tensors.size());
+
+    for (Ort::Value& outv : output_tensors)
+    {
+        Ort::TensorTypeAndShapeInfo shape_info = outv.GetTensorTypeAndShapeInfo();
+        std::vector<int64_t> out_shape = shape_info.GetShape();
+
+        std::vector<int> out_dims;
+        out_dims.reserve(out_shape.size());
+        for (int64_t d : out_shape)
+        {
+            if (d < 0)
+                CV_Error(Error::StsError, "DNN/ORT: dynamic output shapes are not supported at runtime");
+            if (d > (int64_t)std::numeric_limits<int>::max())
+                CV_Error(Error::StsError, "DNN/ORT: output shape dimension is too large");
+            out_dims.push_back((int)d);
+        }
+
+        const ONNXTensorElementDataType out_elem_type = shape_info.GetElementType();
+        const int cvOutType = cvTypeFromONNXElemType(out_elem_type);
+        if (cvOutType < 0)
+            CV_Error_(Error::StsNotImplemented, ("DNN/ORT: unsupported ORT output element type: %d", (int)out_elem_type));
+
+        uint8_t* out_bytes = outv.GetTensorMutableData<uint8_t>();
+        Mat view(out_dims, cvOutType, out_bytes);
+        results.push_back(view.clone());  // detach from ORT-owned memory
+    }
+
+    return results;
+}
+#endif
 
 std::string modelFormatToString(ModelFormat modelFormat)
 {
@@ -126,7 +373,7 @@ public:
         prindent(strm, subindent);
         strm << "],\n";
         prindent(strm, subindent);
-        strm << "nodes: [\n";
+        strm << "layers: [\n";
         size_t nlayers = prog_.size();
         for (size_t i = 0; i < nlayers; i++) {
             prindent(strm, argindent);
@@ -288,14 +535,21 @@ Ptr<Graph> Net::Impl::newGraph(const std::string& name_, const std::vector<Arg>&
 
 void Net::Impl::prepareForInference()
 {
+#ifdef HAVE_ONNXRUNTIME
+    if (this->ort_session)
+    {
+        prepared = true;
+        finalizeLayers = false;
+        return;
+    }
+#endif
+
     if (!prepared) {
+        fuseQDQ();
         constFold();
-        //inferTypes();
-        //constArgs();
-        //inferShapes(true);
-        //fuse();
-        //useBlockLayout();
-        //inferShapes(true);
+        constArgs();
+        useBlockLayout();
+        fuseBasic();
         assignBuffers();
         totalLayers = updateGraphOfs(mainGraph, 0, true);
         prepared = true;
@@ -364,6 +618,44 @@ void Net::Impl::allocateLayerOutputs(
 
 void Net::Impl::forwardMainGraph(InputArrayOfArrays inputs, OutputArrayOfArrays outputs)
 {
+#ifdef HAVE_ONNXRUNTIME
+    if (useOrtEngine && mainGraph && modelFormat == DNN_MODEL_ONNX && !modelFileName.empty())
+        finalizeOrt();
+    if (this->ort_session)
+    {
+        if (!netInputLayer || netInputLayer->blobs.empty())
+            CV_Error(Error::StsError, "DNN/ORT: No input data found");
+
+        std::vector<Mat> ortOuts = runOrtSession(netInputLayer->blobs, std::vector<int>());
+
+        std::vector<Mat>* outMats = nullptr;
+        std::vector<UMat>* outUMats = nullptr;
+        _InputArray::KindFlag outKind = outputs.kind();
+        if (outKind == _InputArray::STD_VECTOR_MAT)
+        {
+            outMats = &outputs.getMatVecRef();
+            *outMats = ortOuts;
+        }
+        else if (outKind == _InputArray::STD_VECTOR_UMAT)
+        {
+            outUMats = &outputs.getUMatVecRef();
+            outUMats->resize(ortOuts.size());
+            for (size_t i = 0; i < ortOuts.size(); ++i)
+                ortOuts[i].copyTo(outUMats->at(i));
+        }
+        else if (outKind == _InputArray::MAT || outKind == _InputArray::UMAT)
+        {
+            CV_CheckEQ((int)ortOuts.size(), 1, "DNN/ORT: single Mat/UMat output requires exactly one ORT output");
+            ortOuts[0].copyTo(outputs);
+        }
+        else
+        {
+            CV_Error(Error::StsBadArg, "DNN/ORT: outputs must be Mat, UMat, a vector of Mat's or a vector of UMat's");
+        }
+        return;
+    }
+
+#endif
     if (!mainGraph) {
         CV_Error(Error::StsNullPtr, "the model was not loaded");
     }
@@ -383,24 +675,159 @@ void Net::Impl::forwardMainGraph(InputArrayOfArrays inputs, OutputArrayOfArrays 
     finalizeLayers = false;
 }
 
-Mat Net::Impl::forwardWithSingleOutput(const std::string& outname)
+void Net::Impl::forwardWithSingleOutput(const std::string& outname, OutputArrayOfArrays outputBlobs)
 {
-    if (!mainGraph) {
-        CV_Error(Error::StsNullPtr, "the model was not loaded");
+#ifdef HAVE_ONNXRUNTIME
+    if (useOrtEngine && mainGraph && modelFormat == DNN_MODEL_ONNX && !modelFileName.empty())
+        finalizeOrt();
+    if (this->ort_session)
+    {
+        if (!netInputLayer || netInputLayer->blobs.empty())
+            CV_Error(Error::StsError, "DNN/ORT: No input data found");
+
+        if (!this->ort_names_cache)
+            this->ort_names_cache = std::make_shared<OrtNamesCache>(*this->ort_session);
+
+        int outIdx = 0;
+        if (!outname.empty())
+        {
+            OrtNamesCache& names = *this->ort_names_cache;
+            auto it = names.output_name_to_index.find(outname);
+            if (it == names.output_name_to_index.end())
+                CV_Error_(Error::StsObjectNotFound, ("DNN/ORT: output '%s' is not found", outname.c_str()));
+            outIdx = it->second;
+        }
+
+        std::vector<int> outIdxs(1, outIdx);
+        std::vector<Mat> outs = runOrtSession(netInputLayer->blobs, outIdxs);
+        CV_Assert(outs.size() == 1);
+        outputBlobs.assign(outs[0]);
+        return;
     }
-    const std::vector<Arg>& outargs = mainGraph->outputs();
-    CV_Assert(outargs.size() > 0);
-    if (!outname.empty()) {
-        const ArgData& outdata = args.at(outargs[0].idx);
-        CV_Assert(outdata.name == outname);
+#endif
+    {
+        if (!mainGraph) {
+            CV_Error(Error::StsNullPtr, "the model was not loaded");
+        }
+        if (!outname.empty()) {
+            auto it = argnames.find(outname);
+            if (it == argnames.end()) {
+                size_t excl = outname.rfind('!');
+                if (excl != std::string::npos) {
+                    it = argnames.find(outname.substr(excl + 1));
+                }
+            }
+            if (it == argnames.end())
+                CV_Error_(Error::StsObjectNotFound,
+                          ("DNN: tensor '%s' is not found in the graph", outname.c_str()));
+
+            Arg targetArg((int)it->second);
+
+            std::vector<Mat> inps, outs;
+            forwardMainGraph(inps, outs);
+
+            const std::vector<Arg>& gr_outputs = mainGraph->outputs();
+            for (size_t i = 0; i < gr_outputs.size(); i++) {
+                if (gr_outputs[i].idx == targetArg.idx) {
+                    outputBlobs.assign(outs[i]);
+                    return;
+                }
+            }
+
+            const ArgData& adata = args.at(targetArg.idx);
+            Mat result;
+            if (adata.kind == DNN_ARG_TEMP) {
+                int bufidx = bufidxs.at(targetArg.idx);
+                CV_Assert(bufidx >= 0 && bufidx < (int)buffers.size());
+                result = buffers[bufidx];
+            } else {
+                result = __tensors__.at(targetArg.idx);
+            }
+            if (result.shape().layout == DATA_LAYOUT_BLOCK) {
+                Mat converted;
+                transformLayout(result, converted, originalLayout, originalLayout, defaultC0);
+                outputBlobs.assign(converted);
+            } else {
+                outputBlobs.assign(result.clone());
+            }
+            return;
+        }
     }
-    std::vector<Mat> inps={}, outs;
+
+    std::vector<Mat> inps, outs;
     forwardMainGraph(inps, outs);
-    return outs[0];
+    CV_Assert(!outs.empty());
+    outputBlobs.assign(outs[0]);
 }
 
 void Net::Impl::forwardWithMultipleOutputs(OutputArrayOfArrays outblobs, const std::vector<std::string>& outnames)
 {
+#ifdef HAVE_ONNXRUNTIME
+    if (useOrtEngine && mainGraph && modelFormat == DNN_MODEL_ONNX && !modelFileName.empty())
+        finalizeOrt();
+    if (this->ort_session)
+    {
+        if (!netInputLayer || netInputLayer->blobs.empty())
+            CV_Error(Error::StsError, "DNN/ORT: No input data found");
+
+        if (!this->ort_names_cache)
+            this->ort_names_cache = std::make_shared<OrtNamesCache>(*this->ort_session);
+
+        OrtNamesCache& names = *this->ort_names_cache;
+        const int totalOutputs = (int)names.output_names.size();
+        if (totalOutputs <= 0)
+            CV_Error(Error::StsError, "DNN/ORT: ORT session has no outputs");
+
+        std::vector<int> outIdxs;
+        if (outnames.empty())
+        {
+            outIdxs.resize((size_t)totalOutputs);
+            for (int i = 0; i < totalOutputs; ++i)
+                outIdxs[(size_t)i] = i;
+        }
+        else
+        {
+            outIdxs.reserve(outnames.size());
+            for (const std::string& n : outnames)
+            {
+                auto it = names.output_name_to_index.find(n);
+                if (it == names.output_name_to_index.end())
+                    CV_Error_(Error::StsObjectNotFound, ("DNN/ORT: output '%s' is not found", n.c_str()));
+                outIdxs.push_back(it->second);
+            }
+        }
+
+        std::vector<Mat> outs = runOrtSession(netInputLayer->blobs, outIdxs);
+
+        std::vector<Mat>* outMats = nullptr;
+        std::vector<UMat>* outUMats = nullptr;
+        _InputArray::KindFlag outKind = outblobs.kind();
+        if (outKind == _InputArray::STD_VECTOR_MAT) {
+            outMats = &outblobs.getMatVecRef();
+            outMats->resize(outs.size());
+        } else if (outKind == _InputArray::STD_VECTOR_UMAT) {
+            outUMats = &outblobs.getUMatVecRef();
+            outUMats->resize(outs.size());
+        } else if (outKind == _InputArray::MAT || outKind == _InputArray::UMAT) {
+            CV_CheckEQ((int)outs.size(), 1, "DNN/ORT: Mat/UMat output requires exactly one output");
+        } else {
+            CV_Error(Error::StsBadArg, "outputs must be Mat, UMat, a vector of Mat's or a vector of UMat's");
+        }
+
+        for (size_t i = 0; i < outs.size(); ++i) {
+            Mat src = outs[i];
+            if (outMats) {
+                src.copyTo(outMats->at(i));
+            } else if (outUMats) {
+                src.copyTo(outUMats->at(i));
+            } else {
+                src.copyTo(outblobs);
+            }
+        }
+        return;
+    }
+#endif
+
     if (!mainGraph) {
         CV_Error(Error::StsNullPtr, "the model was not loaded");
     }
@@ -506,15 +933,84 @@ void Net::Impl::traceArg(std::ostream& strm_, const char* prefix, size_t i, Arg 
     }
     strm_ << "\n  Layout: " << layoutToString(shape.layout) << "\n";
     if (dumpdata && !constArg) {
-        // [TODO] when we support block layout, block-layout tensor
-        // should be converted to the original layout before printing it
-        pprint(strm_, m, 0, PPRINT_CONTEXT, PPRINT_ALL_THRESHOLD, '[');
+        Mat temp;
+        if (m.size.layout == DATA_LAYOUT_BLOCK) {
+            transformLayout(m, temp, originalLayout, originalLayout, m.size.C);
+        } else {
+            temp = m;
+        }
+        pprint(strm_, temp, 0, PPRINT_CONTEXT, PPRINT_ALL_THRESHOLD, '[');
         strm_ << "\n";
     }
 }
 
 void Net::Impl::setMainGraphInput(InputArray m, const std::string& inpname)
 {
+#ifdef HAVE_ONNXRUNTIME
+    if (useOrtEngine && ortNeedsReinit && mainGraph && modelFormat == DNN_MODEL_ONNX && !modelFileName.empty())
+    {
+        Mat inputMat = m.getMat();
+        if (inputMat.empty())
+            CV_Error(Error::StsBadArg, "DNN/ORT: Input blob is empty");
+
+        bool updated = false;
+        for (size_t i = 0; i < ort_staged_inputs.size(); ++i)
+        {
+            if (ort_staged_inputs[i].first == inpname)
+            {
+                inputMat.copyTo(ort_staged_inputs[i].second);
+                updated = true;
+                break;
+            }
+        }
+        if (!updated)
+            ort_staged_inputs.push_back(std::make_pair(inpname, inputMat.clone()));
+        return;
+    }
+
+    if (this->ort_session)
+    {
+        if (!this->ort_names_cache)
+            this->ort_names_cache = std::make_shared<OrtNamesCache>(*this->ort_session);
+
+        OrtNamesCache& names = *this->ort_names_cache;
+        const size_t ninputs = names.input_names.size();
+        if (ninputs == 0)
+            CV_Error(Error::StsError, "DNN/ORT: ORT session has no inputs");
+
+        if (!netInputLayer) {
+            netInputLayer = Ptr<DataLayer>(new DataLayer());
+            netInputLayer->name = "ort_data_layer";
+            netInputLayer->type = "Data";
+        }
+
+        Mat inputMat = m.getMat();
+        if (inputMat.empty())
+            CV_Error(Error::StsBadArg, "DNN/ORT: Input blob is empty");
+
+        if (netInputLayer->blobs.size() != ninputs)
+            netInputLayer->blobs.resize(ninputs);
+
+        size_t inputIdx = 0;
+        if (inpname.empty())
+        {
+            if (ninputs != 1)
+                CV_Error(Error::StsBadArg, "DNN/ORT: input name must be specified for models with multiple inputs");
+            inputIdx = 0;
+        }
+        else
+        {
+            auto it = names.input_name_to_index.find(inpname);
+            if (it == names.input_name_to_index.end())
+                CV_Error_(Error::StsObjectNotFound, ("DNN/ORT: input '%s' is not found", inpname.c_str()));
+            inputIdx = (size_t)it->second;
+        }
+
+        inputMat.copyTo(netInputLayer->blobs[inputIdx]);
+        return;
+    }
+#endif
+
     CV_Assert(mainGraph);
     const std::vector<Arg>& gr_inputs = mainGraph->inputs();
     size_t i, ninputs = gr_inputs.size();
@@ -655,7 +1151,6 @@ void Net::Impl::forwardGraph(Ptr<Graph>& graph, InputArrayOfArrays inputs_,
 
         for (i = 0; i < ninputs; i++) {
             Arg inp = inputs[i];
-            //const ArgData& adata = args[inp.idx];
             const Mat& m = argTensor(inp);
             inpMats[i] = m;
             inpTypes[i] = m.type();
@@ -693,6 +1188,7 @@ void Net::Impl::forwardGraph(Ptr<Graph>& graph, InputArrayOfArrays inputs_,
         }
         else {
             Ptr<IfLayer> iflayer = layer.dynamicCast<IfLayer>();
+            Ptr<LoopLayer> loopLayer = layer.dynamicCast<LoopLayer>();
             if (iflayer) {
                 int branch = iflayer->branch(inpMats[0]);
                 Ptr<Graph> subgraph = subgraphs->at(branch);
@@ -700,6 +1196,89 @@ void Net::Impl::forwardGraph(Ptr<Graph>& graph, InputArrayOfArrays inputs_,
                 if (inpMats.size() > 1)
                     branchInputs.assign(inpMats.begin() + 1, inpMats.end());
                 forwardGraph(subgraph, branchInputs, outMats, false);
+            }
+            else if (loopLayer) {
+                CV_Assert(subgraphs->size() == 1);
+                Ptr<Graph> body = subgraphs->at(0);
+
+                int n_in = (int)inpMats.size();
+                int n_state = n_in - 2;
+                int n_accum = (int)body->outputs().size() - n_state - 1;
+                CV_Assert(n_in >= 2 && n_state >= 0 && n_accum >= 0);
+
+                Mat mIter, mCond, tmp;
+                mIter.create(1, 1, CV_64S);
+                if (inpMats[1].empty())
+                {
+                    mCond.create(1, 1, CV_8U);
+                    mCond.at<uchar>(0) = 1;
+                }
+                else
+                {
+                    mCond = inpMats[1];
+                }
+                int64 iter = 0;
+                int64 max_iter = inpMats[0].empty() ? -1 :
+                                 (inpMats[0].convertTo(tmp, CV_64S), *tmp.ptr<int64>());
+                bool active = loopLayer->cond(mCond);
+
+                std::vector<Mat> state(inpMats.begin() + 2, inpMats.end());
+                std::vector<std::vector<Mat> > history(n_accum);
+                std::vector<Mat> inputs(n_in), outputs;
+
+                while (active && (max_iter < 0 || iter < max_iter)) {
+                    mIter.at<int64>(0) = iter++;
+                    inputs[0] = mIter;
+                    inputs[1] = mCond;
+                    std::copy(state.begin(), state.end(), inputs.begin() + 2);
+
+                    forwardGraph(body, inputs, outputs, false);
+
+                    mCond = outputs[0];
+                    active = loopLayer->cond(mCond);
+
+                    for (int i = 0; i < n_state; i++)
+                        state[i] = outputs[1 + i];
+                    for (int i = 0; i < n_accum; i++)
+                        history[i].push_back(outputs[1 + n_state + i].clone());
+                }
+
+                outMats.assign(state.begin(), state.end());
+                outMats.resize(n_state + n_accum);
+
+                for (int i = 0; i < n_accum; ++i) {
+                    const std::vector<Mat>& perIter = history[i];
+                    if (perIter.empty()) {
+                        outMats[n_state + i] = Mat();
+                        continue;
+                    }
+
+                    const Mat& first = perIter[0];
+                    MatShape elemShape = first.shape();
+                    int ndims = elemShape.dims;
+                    CV_Assert(ndims >= 0);
+
+                    MatShape outShape(ndims + 1);
+                    outShape[0] = (int)perIter.size();
+                    for (int d = 0; d < ndims; ++d)
+                        outShape[d + 1] = elemShape[d];
+
+                    Mat stacked;
+                    stacked.create(outShape, first.type());
+
+                    for (size_t k = 0; k < perIter.size(); ++k)
+                    {
+                        const Mat& src = perIter[k];
+                        CV_Assert(src.type() == first.type());
+                        CV_Assert(src.total() == first.total());
+
+                        Mat dst = stacked.reshape(0, (int)perIter.size())
+                                         .row((int)k)
+                                         .reshape(first.channels(), elemShape.dims, &elemShape[0]);
+                        src.copyTo(dst);
+                    }
+                    outMats[n_state + i] = stacked;
+                }
             }
             else {
                 CV_Error_(Error::StsNotImplemented,
@@ -727,7 +1306,7 @@ void Net::Impl::forwardGraph(Ptr<Graph>& graph, InputArrayOfArrays inputs_,
                                 buf.type() == m.type(),
                                 (!m.u || m.u->data == outOrigData[i].first),
                                 (!m.u || m.u->size == outOrigData[i].second));
-                } else if (!buf.u || m.u->size > buf.u->size) {
+                } else if (!buf.u || (m.u && m.u->size > buf.u->size)) {
                     buf = m;
                 } else {
                     // this branch means that the layer still calls
@@ -738,6 +1317,16 @@ void Net::Impl::forwardGraph(Ptr<Graph>& graph, InputArrayOfArrays inputs_,
                 }
             } else {
                 __tensors__.at(out.idx) = m;
+            }
+        }
+
+        size_t ntemps = tempMats.size();
+        scratchBufs.resize(std::max(ntemps, scratchBufs.size()));
+        for (size_t i = 0; i < ntemps; i++) {
+            size_t newtotal_i = tempMats[i].total()*tempMats[i].elemSize();
+            size_t total_i = scratchBufs[i].total()*scratchBufs[i].elemSize();
+            if (newtotal_i > total_i) {
+                scratchBufs[i] = tempMats[i];
             }
         }
 
@@ -760,8 +1349,12 @@ void Net::Impl::forwardGraph(Ptr<Graph>& graph, InputArrayOfArrays inputs_,
         Arg out = gr_outputs[i];
         const Mat& outm = argTensor(out);
         if (isMainGraph) {
-            outputsVec[i].fit(outm.shape(), outm.type());
-            outm.copyTo(outputsVec[i]);
+            if (outm.size.layout == DATA_LAYOUT_BLOCK) {
+                transformLayout(outm, outputsVec[i], originalLayout, originalLayout, outm.size.C);
+            } else {
+                outputsVec[i].fit(outm.shape(), outm.type());
+                outm.copyTo(outputsVec[i]);
+            }
         } else {
             outputsVec[i] = outm;
         }
@@ -1119,10 +1712,6 @@ std::ostream& Net::Impl::dump(std::ostream& strm)
     strm << "{\n";
     prindent(strm, indent);
     strm << "model_format: \"" << modelFormatToString(modelFormat) << "\",\n";
-    if (modelFormat == DNN_MODEL_ONNX) {
-        prindent(strm, indent);
-        strm << "onnx_opset: " << onnx_opset << ",\n";
-    }
     prindent(strm, indent);
     strm << "layout: \"" << layoutToString(originalLayout) << "\",\n";
     if (mainGraph) {

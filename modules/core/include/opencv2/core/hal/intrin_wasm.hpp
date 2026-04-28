@@ -1238,17 +1238,14 @@ OPENCV_HAL_IMPL_WASM_INIT_CMP_OP(v_uint16x8, u16x8, i16x8)
 OPENCV_HAL_IMPL_WASM_INIT_CMP_OP(v_int16x8, i16x8, i16x8)
 OPENCV_HAL_IMPL_WASM_INIT_CMP_OP(v_uint32x4, u32x4, i32x4)
 OPENCV_HAL_IMPL_WASM_INIT_CMP_OP(v_int32x4, i32x4, i32x4)
+OPENCV_HAL_IMPL_WASM_INIT_CMP_OP(v_int64x2, i64x2, i64x2)
 OPENCV_HAL_IMPL_WASM_INIT_CMP_OP(v_float32x4, f32x4, f32x4)
 OPENCV_HAL_IMPL_WASM_INIT_CMP_OP(v_float64x2, f64x2, f64x2)
 
-#define OPENCV_HAL_IMPL_WASM_64BIT_CMP_OP(_Tpvec, cast) \
-inline _Tpvec v_eq(const _Tpvec& a, const _Tpvec& b) \
-{ return cast(v_eq(v_reinterpret_as_f64(a), v_reinterpret_as_f64(b))); } \
-inline _Tpvec v_ne(const _Tpvec& a, const _Tpvec& b) \
-{ return cast(v_ne(v_reinterpret_as_f64(a), v_reinterpret_as_f64(b))); }
-
-OPENCV_HAL_IMPL_WASM_64BIT_CMP_OP(v_uint64x2, v_reinterpret_as_u64)
-OPENCV_HAL_IMPL_WASM_64BIT_CMP_OP(v_int64x2, v_reinterpret_as_s64)
+inline v_uint64x2 v_eq(const v_uint64x2& a, const v_uint64x2& b)
+{ return v_reinterpret_as_u64(v_eq(v_reinterpret_as_f64(a), v_reinterpret_as_f64(b))); }
+inline v_uint64x2 v_ne(const v_uint64x2& a, const v_uint64x2& b)
+{ return v_reinterpret_as_u64(v_ne(v_reinterpret_as_f64(a), v_reinterpret_as_f64(b))); }
 
 inline v_float32x4 v_not_nan(const v_float32x4& a)
 {
@@ -1859,9 +1856,12 @@ inline _Tpwvec v_expand_high(const _Tpvec& a)                        \
 { return _Tpwvec(__CV_CAT(intrin, _high)(a.val)); }                  \
 inline _Tpwvec v_load_expand(const _Tp* ptr)                         \
 {                                                                    \
-    v128_t a = wasm_v128_load(ptr);                                  \
-    return _Tpwvec(intrin(a));                                       \
-}
+    using lane_t = typename _Tpwvec::lane_type;                      \
+    alignas(16) lane_t tmp[_Tpwvec::nlanes];                         \
+    for(int i = 0; i < _Tpwvec::nlanes; i++)                         \
+        tmp[i] = static_cast<lane_t>(ptr[i]);                        \
+    return _Tpwvec(wasm_v128_load(tmp));                             \
+}                                                                    \
 
 OPENCV_HAL_IMPL_WASM_EXPAND(v_uint8x16, v_uint16x8, uchar, v128_cvtu8x16_i16x8)
 OPENCV_HAL_IMPL_WASM_EXPAND(v_int8x16,  v_int16x8,  schar, v128_cvti8x16_i16x8)
@@ -1873,9 +1873,12 @@ OPENCV_HAL_IMPL_WASM_EXPAND(v_int32x4,  v_int64x2,  int, v128_cvti32x4_i64x2)
 #define OPENCV_HAL_IMPL_WASM_EXPAND_Q(_Tpvec, _Tp, intrin)  \
 inline _Tpvec v_load_expand_q(const _Tp* ptr)               \
 {                                                           \
-    v128_t a = wasm_v128_load(ptr);                         \
-    return _Tpvec(intrin(a));                               \
-}
+    using lane_t =  typename _Tpvec::lane_type;             \
+    alignas(16) lane_t tmp[_Tpvec::nlanes];                 \
+    for(int i = 0; i < _Tpvec::nlanes; i++)                 \
+        tmp[i] = static_cast<lane_t>(ptr[i]);               \
+    return _Tpvec(wasm_v128_load(tmp));                     \
+}                                                           \
 
 OPENCV_HAL_IMPL_WASM_EXPAND_Q(v_uint32x4, uchar, v128_cvtu8x16_i32x4)
 OPENCV_HAL_IMPL_WASM_EXPAND_Q(v_int32x4, schar, v128_cvti8x16_i32x4)

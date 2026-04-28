@@ -64,9 +64,10 @@ Net::Impl::Impl()
 
     modelFormat = DNN_MODEL_GENERIC;
     originalLayout = DATA_LAYOUT_NCHW;
-    onnx_opset = 0;
+    // onnx_opset = 0;
 
     accuracy = CV_32F;
+    defaultC0 = DEFAULT_C0;
     enableFP16 = haveFP16 = false;
     // FP16 is not ready yet in the new DNN engine
     // Ticket: https://github.com/opencv/opencv/issues/26196
@@ -991,9 +992,9 @@ Mat Net::Impl::forward(const String& outputName)
     FPDenormalsIgnoreHintScope fp_denormals_ignore_scope;
 
     if (mainGraph) {
-        if (!outputName.empty())
-            CV_Error(Error::StsNotImplemented, "The new dnn engine doesn't support inference until a specified layer. If you want to run the whole model, please don't set the outputName argument in the forward() call. If you want to run the model until a specified layer, please use the old dnn engine");
-        return forwardWithSingleOutput(outputName);
+        Mat result;
+        forwardWithSingleOutput(outputName, result);
+        return result;
     }
 
     String layerName = outputName;
@@ -1050,8 +1051,10 @@ void Net::Impl::forward(OutputArrayOfArrays outputBlobs, const String& outputNam
     FPDenormalsIgnoreHintScope fp_denormals_ignore_scope;
 
     if (mainGraph) {
-        if (!outputName.empty())
-            CV_Error(Error::StsNotImplemented, "The new dnn engine doesn't support inference until a specified layer. If you want to run the whole model, please don't set the outputName argument in the forward() call. If you want to run the model until a specified layer, please use the old dnn engine");
+        if (!outputName.empty()) {
+            forwardWithSingleOutput(outputName, outputBlobs);
+            return;
+        }
         forwardWithMultipleOutputs(outputBlobs, {});
         return;
     }
@@ -1142,14 +1145,15 @@ void Net::Impl::forward(OutputArrayOfArrays outputBlobs,
         const std::vector<String>& outBlobNames)
 {
     CV_Assert(!empty());
-    if (outBlobNames.empty())
-        CV_Error(Error::StsBadArg, "in Net::forward(), outBlobNames cannot be empty");
     FPDenormalsIgnoreHintScope fp_denormals_ignore_scope;
 
     if (mainGraph) {
         forwardWithMultipleOutputs(outputBlobs, outBlobNames);
         return;
     }
+
+    if (outBlobNames.empty())
+        CV_Error(Error::StsBadArg, "in Net::forward(), outBlobNames cannot be empty");
 
     std::vector<LayerPin> pins;
     for (int i = 0; i < outBlobNames.size(); i++)
@@ -1633,6 +1637,51 @@ void Net::Impl::setParam(int layer, int numParam, const Mat& blob)
     CV_Assert(numParam < (int)layerBlobs.size());
     // we don't make strong checks, use this function carefully
     layerBlobs[numParam] = blob;
+}
+
+void Net::Impl::setParam(const std::string& outputTensorName, int numParam, const Mat& blob)
+{
+    if (mainGraph) {
+        auto it = argnames.find(outputTensorName);
+        if (it == argnames.end()) {
+            size_t excl = outputTensorName.rfind('!');
+            if (excl != std::string::npos)
+                it = argnames.find(outputTensorName.substr(excl + 1));
+        }
+        if (it == argnames.end())
+            CV_Error_(Error::StsObjectNotFound,
+                      ("DNN: tensor '%s' not found in the graph", outputTensorName.c_str()));
+
+        int targetIdx = (int)it->second;
+        const std::vector<Ptr<Layer>>& prog = mainGraph->prog();
+        for (const auto& layer : prog) {
+            bool produces = false;
+            for (const Arg& out : layer->outputs)
+                if (out.idx == targetIdx) { produces = true; break; }
+            if (!produces)
+                continue;
+
+            if (numParam < (int)layer->blobs.size()) {
+                layer->blobs[numParam] = blob;
+                finalizeLayers = true;
+                return;
+            }
+
+            Conv2Layer* conv = dynamic_cast<Conv2Layer*>(layer.get());
+            if (conv && numParam == 0) {
+                conv->setWeights(blob, Mat(), defaultC0, accuracy);
+                finalizeLayers = true;
+                return;
+            }
+
+            CV_Error_(Error::StsOutOfRange,
+                      ("DNN: op producing '%s' has fewer than %d params",
+                       outputTensorName.c_str(), numParam + 1));
+        }
+        CV_Error_(Error::StsObjectNotFound,
+                  ("DNN: no op found in graph producing tensor '%s'", outputTensorName.c_str()));
+    }
+    setParam(getLayerId(outputTensorName), numParam, blob);
 }
 
 
@@ -2374,9 +2423,71 @@ std::vector<String> Net::Impl::getUnconnectedOutLayersNames() /*const*/
 }
 
 
+int64 Net::Impl::getFLOPSGraph(const Ptr<Graph>& graph,
+                               const std::vector<MatShape>& shapeCache,
+                               const std::vector<MatType>& typeCache) const
+{
+    if (!graph)
+        return 0;
+
+    int64 flops = 0;
+    const std::vector<Ptr<Layer>>& prog = graph->prog();
+
+    for (const Ptr<Layer>& layer : prog) {
+        if (!layer)
+            continue;
+
+        const std::vector<Arg>& inputs = layer->inputs;
+        const std::vector<Arg>& outputs = layer->outputs;
+        int ninputs = (int)inputs.size();
+        int noutputs = (int)outputs.size();
+
+        std::vector<MatShape> inpShapes(ninputs), outShapes(noutputs);
+        for (int i = 0; i < ninputs; i++) {
+            Arg inp = inputs[i];
+            const ArgData& adata = args.at(inp.idx);
+            if (adata.kind == DNN_ARG_CONST || adata.kind == DNN_ARG_EMPTY)
+                inpShapes[i] = adata.shape;
+            else
+                inpShapes[i] = shapeCache[inp.idx];
+        }
+        for (int i = 0; i < noutputs; i++) {
+            Arg out = outputs[i];
+            if (out.idx > 0 && out.idx < (int)shapeCache.size())
+                outShapes[i] = shapeCache[out.idx];
+        }
+
+        // Skip FLOPS calculation if any shape is empty (unknown due to dynamic shapes)
+        bool hasEmptyShape = false;
+        for (int i = 0; i < ninputs && !hasEmptyShape; i++)
+            hasEmptyShape = inpShapes[i].empty();
+        for (int i = 0; i < noutputs && !hasEmptyShape; i++)
+            hasEmptyShape = outShapes[i].empty();
+
+        if (!hasEmptyShape)
+            flops += layer->getFLOPS(inpShapes, outShapes);
+
+        const std::vector<Ptr<Graph>>* subgraphs = layer->subgraphs();
+        if (subgraphs) {
+            for (const Ptr<Graph>& sg : *subgraphs)
+                flops += getFLOPSGraph(sg, shapeCache, typeCache);
+        }
+    }
+    return flops;
+}
+
+
 int64 Net::Impl::getFLOPS(const std::vector<MatShape>& netInputShapes,
                           const std::vector<MatType>& netInputTypes) /*const*/
 {
+    if (mainGraph) {
+        LayerShapes shapes;
+        std::vector<MatShape> shapeCache;
+        std::vector<MatType> typeCache;
+        tryInferShapes(netInputShapes, netInputTypes, shapes, shapeCache, typeCache);
+        return getFLOPSGraph(mainGraph, shapeCache, typeCache);
+    }
+
     int64 flops = 0;
     std::vector<int> ids;
     std::vector<std::vector<MatShape>> inShapes, outShapes;
@@ -2398,6 +2509,49 @@ int64 Net::Impl::getFLOPS(
         const std::vector<MatShape>& netInputShapes,
         const std::vector<MatType>& netInputTypes) /*const*/
 {
+    if (mainGraph) {
+        LayerShapes shapes;
+        std::vector<MatShape> shapeCache;
+        std::vector<MatType> typeCache;
+        tryInferShapes(netInputShapes, netInputTypes, shapes, shapeCache, typeCache);
+
+        CV_Assert(0 <= layerId && layerId < (int)totalLayers);
+        int localIdx = layerId;
+        for (const Ptr<Graph>& graph : allgraphs) {
+            int progSize = (int)graph->prog().size();
+            if (localIdx < progSize) {
+                const Ptr<Layer>& layer = graph->prog()[localIdx];
+                if (!layer)
+                    return 0;
+
+                const std::vector<Arg>& inputs = layer->inputs;
+                const std::vector<Arg>& outputs = layer->outputs;
+                int ninputs = (int)inputs.size();
+                int noutputs = (int)outputs.size();
+
+                std::vector<MatShape> inpShapes(ninputs), outShapes(noutputs);
+                for (int i = 0; i < ninputs; i++) {
+                    Arg inp = inputs[i];
+                    const ArgData& adata = args.at(inp.idx);
+                    if (adata.kind == DNN_ARG_CONST || adata.kind == DNN_ARG_EMPTY)
+                        inpShapes[i] = adata.shape;
+                    else
+                        inpShapes[i] = shapeCache[inp.idx];
+                }
+                for (int i = 0; i < noutputs; i++) {
+                    Arg out = outputs[i];
+                    if (out.idx > 0 && out.idx < (int)shapeCache.size())
+                        outShapes[i] = shapeCache[out.idx];
+                }
+
+                return layer->getFLOPS(inpShapes, outShapes);
+            }
+            localIdx -= progSize;
+        }
+
+        CV_Error(Error::StsOutOfRange, format("Layer id %d is out of range", layerId));
+    }
+
     Impl::MapIdToLayerData::const_iterator layer = layers.find(layerId);
     CV_Assert(layer != layers.end());
 

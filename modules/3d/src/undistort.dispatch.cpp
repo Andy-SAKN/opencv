@@ -66,6 +66,46 @@ Mat getDefaultNewCameraMatrix( InputArray _cameraMatrix, Size imgsize,
     return newCameraMatrix;
 }
 
+void calibrationMatrixValues( InputArray _cameraMatrix, Size imageSize,
+                              double apertureWidth, double apertureHeight,
+                              double& fovx, double& fovy, double& focalLength,
+                              Point2d& principalPoint, double& aspectRatio )
+{
+    CV_INSTRUMENT_REGION();
+
+    if(_cameraMatrix.size() != Size(3, 3))
+        CV_Error(cv::Error::StsUnmatchedSizes, "Size of cameraMatrix must be 3x3!");
+
+    Matx33d A;
+    _cameraMatrix.getMat().convertTo(A, CV_64F);
+    CV_DbgAssert(imageSize.width != 0 && imageSize.height != 0 && A(0, 0) != 0.0 && A(1, 1) != 0.0);
+
+    /* Calculate pixel aspect ratio. */
+    aspectRatio = A(1, 1) / A(0, 0);
+
+    /* Calculate number of pixel per realworld unit. */
+    double mx, my;
+    if(apertureWidth != 0.0 && apertureHeight != 0.0) {
+        mx = imageSize.width / apertureWidth;
+        my = imageSize.height / apertureHeight;
+    } else {
+        mx = 1.0;
+        my = aspectRatio;
+    }
+
+    /* Calculate fovx and fovy. */
+    fovx = atan2(A(0, 2), A(0, 0)) + atan2(imageSize.width  - A(0, 2), A(0, 0));
+    fovy = atan2(A(1, 2), A(1, 1)) + atan2(imageSize.height - A(1, 2), A(1, 1));
+    fovx *= 180.0 / CV_PI;
+    fovy *= 180.0 / CV_PI;
+
+    /* Calculate focal length. */
+    focalLength = A(0, 0) / mx;
+
+    /* Calculate principle point. */
+    principalPoint = Point2d(A(0, 2) / mx, A(1, 2) / my);
+}
+
 static Ptr<ParallelLoopBody> getInitUndistortRectifyMapComputer(Size _size, Mat &_map1, Mat &_map2, int _m1type,
                                                          const double* _ir, Matx33d &_matTilt,
                                                          double _u0, double _v0, double _fx, double _fy,
@@ -437,7 +477,11 @@ static void undistortPointsInternal( const Mat& _src, Mat& _dst, const Mat& _cam
             y0 = y = invProj * vecUntilt(1);
 
             double error = std::numeric_limits<double>::max();
+            double prevError = std::numeric_limits<double>::max();
             // compensate distortion iteratively using fixed-point iteration
+
+            // parameter for damped fixed-point iteration
+            double alpha = 1.;
 
             for( int j = 0; ; j++ )
             {
@@ -462,10 +506,11 @@ static void undistortPointsInternal( const Mat& _src, Mat& _dst, const Mat& _cam
                 // [x'', y'']^T = [x' / icdist + deltaX, y' / icdist + deltaY]^T =>
                 // [x', y']^T = [(x'' - deltaX) * icdist, (y'' - deltaY) * icdist]^T =>
                 // x' = f1(x') := (x'' - deltaX) * icdist, y' = f2(y') := (y'' - deltaY) * icdist
-                // Fixed-point iteration:
-                //   new_x' = f1(x') = (x'' - deltaX) * icdist, new_y' = f2(y') = (y'' - deltaY) * icdist
-                x = (x0 - deltaX)*icdist;
-                y = (y0 - deltaY)*icdist;
+                // Damped fixed-point iteration:
+                //   f1(x') = (x'' - deltaX) * icdist, f2(y') = (y'' - deltaY) * icdist
+                //   new_x' = (1 - alpha) * x' + alpha * f1(x'), new_y' = (1 - alpha) * y' + alpha * f2(y')
+                double new_x = (1. - alpha)*x + alpha*(x0 - deltaX)*icdist;
+                double new_y = (1. - alpha)*y + alpha*(y0 - deltaY)*icdist;
 
                 if(criteria.type & TermCriteria::EPS)
                 {
@@ -474,20 +519,20 @@ static void undistortPointsInternal( const Mat& _src, Mat& _dst, const Mat& _cam
                     Vec3d vecTilt;
 
                     // r^2 = x'^2 + y'^2
-                    r2 = x*x + y*y;
+                    r2 = new_x*new_x + new_y*new_y;
                     r4 = r2*r2;
                     r6 = r4*r2;
-                    a1 = 2*x*y;
-                    a2 = r2 + 2*x*x;
-                    a3 = r2 + 2*y*y;
+                    a1 = 2*new_x*new_y;
+                    a2 = r2 + 2*new_x*new_x;
+                    a3 = r2 + 2*new_y*new_y;
                     // cdist := 1 + k1 * r^2 + k2 * r^4 + k3 * r^6
                     cdist = 1 + k[0]*r2 + k[1]*r4 + k[4]*r6;
                     // icdist2 := 1 / (1 + k4 * r^2 + k5 * r^4 + k6 * r^6)
                     icdist2 = 1./(1 + k[5]*r2 + k[6]*r4 + k[7]*r6);
                     // x'' = x' * cdist * icdist2 + 2 * p1 * x' * y' + p2 * (r^2 + 2 * x'^2) + s1 * r^2 + s2 * r^4
                     // y'' = y' * cdist * icdist2 + p1 * (r^2 + 2 * y'^2) + 2 * p2 * x' * y' + s3 * r^2 + s4 * r^4
-                    xd0 = x*cdist*icdist2 + k[2]*a1 + k[3]*a2 + k[8]*r2+k[9]*r4;
-                    yd0 = y*cdist*icdist2 + k[2]*a3 + k[3]*a1 + k[10]*r2+k[11]*r4;
+                    xd0 = new_x*cdist*icdist2 + k[2]*a1 + k[3]*a2 + k[8]*r2+k[9]*r4;
+                    yd0 = new_y*cdist*icdist2 + k[2]*a3 + k[3]*a1 + k[10]*r2+k[11]*r4;
 
                     // s * [x''', y''', 1]^T = matTilt * [x'', y'', 1]^T =>
                     // (vecTilt := matTilt * [x'', y'', 1]^T)
@@ -503,8 +548,15 @@ static void undistortPointsInternal( const Mat& _src, Mat& _dst, const Mat& _cam
                     double x_proj = xd*fx + cx;
                     double y_proj = yd*fy + cy;
 
-                    error = sqrt( pow(x_proj - u, 2) + pow(y_proj - v, 2) );
+                    error = sqrt( std::pow(x_proj - u, 2) + std::pow(y_proj - v, 2) );
                 }
+                if (error > prevError) {
+                    alpha *= .5;
+                } else {
+                    x = new_x;
+                    y = new_y;
+                }
+                prevError = error;
             }
         }
 

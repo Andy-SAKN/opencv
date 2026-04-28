@@ -83,7 +83,7 @@ public:
         if( hasBias )
         {
             CV_Assert((size_t)biasBlobIndex < blobs.size());
-            const Mat& b = blobs[weightsBlobIndex];
+            const Mat& b = blobs[biasBlobIndex];
             CV_Assert(b.isContinuous() && b.type() == CV_32F && b.total() == (size_t)n);
         }
 
@@ -163,8 +163,8 @@ public:
                          std::vector<MatShape> &outputs,
                          std::vector<MatShape> &internals) const CV_OVERRIDE
     {
-        if (inputs[0].empty()) { // Support for 0D input
-            outputs.push_back(MatShape()); // Output is also a scalar.
+        if (inputs[0].size() == 0) { // Support for 0D input
+            outputs.push_back(MatShape::scalar()); // Output is also a scalar.
             return true;
         }
 

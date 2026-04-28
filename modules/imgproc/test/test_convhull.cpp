@@ -304,9 +304,11 @@ TEST(Imgproc_ConvexityDefects, ordering_4539)
     vector<int> hull_ind;
     vector<Vec4i> defects;
 
+#if 0  // deprecated behavior
     // first, check the original contour as-is, without intermediate fillPoly/drawContours.
     convexHull(contour_, hull_ind, false, false);
     EXPECT_THROW( convexityDefects(contour_, hull_ind, defects), cv::Exception );
+#endif
 
     int scale = 20;
     contour_ *= (double)scale;
@@ -319,10 +321,12 @@ TEST(Imgproc_ConvexityDefects, ordering_4539)
     findContours(canvas_gray, contours, noArray(), RETR_LIST, CHAIN_APPROX_SIMPLE);
     convexHull(contours[0], hull_ind, false, false);
 
+#if 0  // deprecated behavior
     // the original contour contains self-intersections,
     // therefore convexHull does not return a monotonous sequence of points
     // and therefore convexityDefects throws an exception
     EXPECT_THROW( convexityDefects(contours[0], hull_ind, defects), cv::Exception );
+#endif
 
 #if 1
     // one way to eliminate the contour self-intersection in this particular case is to apply dilate(),
@@ -579,6 +583,19 @@ TEST(Imgproc_minAreaRect, reproducer_19769)
     RotatedRect rr = cv::minAreaRect(contour);
 
     EXPECT_TRUE(checkMinAreaRect(rr, contour)) << rr.center << " " << rr.size << " " << rr.angle;
+}
+
+TEST(Imgproc_minAreaRect, roundtrip_accuracy)
+{
+    RotatedRect rect(Point2f(12.f, 56.f), Size2f(10.f, 25.f), -45.f);
+    std::vector<Point2f> points;
+    rect.points(points);
+    RotatedRect rect_out = minAreaRect(points);
+    EXPECT_LT(std::abs(rect.center.x - rect_out.center.x), 1e-5);
+    EXPECT_LT(std::abs(rect.center.y - rect_out.center.y), 1e-5);
+    EXPECT_LT(std::abs(rect.size.width - rect_out.size.width), 1e-5);
+    EXPECT_LT(std::abs(rect.size.height - rect_out.size.height), 1e-5);
+    EXPECT_LT(std::abs(rect.angle - rect_out.angle), 1e-5);
 }
 
 TEST(Imgproc_minEnclosingTriangle, regression_17585)
@@ -1049,7 +1066,7 @@ TEST_P(minEnclosingTriangle_Modes, accuracy)
             const Mat midPoint = (cur + next) / 2;
             EXPECT_TRUE(isPointOnHull(hull, midPoint));
 
-            // at least one of hull edges must be on tirangle edge
+            // at least one of hull edges must be on triangle edge
             hasEdgeOnHull = hasEdgeOnHull || isEdgeOnHull(hull, cur, next);
         }
         EXPECT_TRUE(hasEdgeOnHull);
@@ -1231,6 +1248,107 @@ TEST(minEnclosingPolygon, pentagon)
         EXPECT_EQ(match, true);
     }
 }
+
+TEST(Imgproc_minAreaRect, reproducer_21482)
+{
+    const int N = 4;
+    float pts_[N][2] = {
+        { 188.8991f, 12.400669f },
+        { 80.64467f, -49.644814f },
+        { 469.59897f, 173.28242f },
+        { 690.4597f, 299.86768f },
+    };
+
+    Mat contour(N, 1, CV_32FC2, (void*)pts_);
+
+    RotatedRect rr = cv::minAreaRect(contour);
+
+    EXPECT_TRUE(checkMinAreaRect(rr, contour)) << rr.center << " " << rr.size << " " << rr.angle;
+    EXPECT_NEAR(min(rr.size.width, rr.size.height), 0, 1e-5);
+    EXPECT_GE(max(rr.size.width, rr.size.height), 702);
+}
+
+TEST(Imgproc_minAreaRect, reproducer_21482_small_values)
+{
+    const int N = 4;
+    float pts_[N][2] = { { 0.f, 0.f }, { 1e-4f, 0.f }, { 1e-4f, 1e-4f }, { 0.f, 1e-4f },};
+
+    Mat contour(N, 1, CV_32FC2, (void*)pts_);
+
+    RotatedRect rr = cv::minAreaRect(contour);
+
+    EXPECT_TRUE(checkMinAreaRect(rr, contour)) << rr.center << " " << rr.size << " " << rr.angle;
+    EXPECT_EQ(rr.size.width, 1e-4f);
+    EXPECT_EQ(rr.size.height, 1e-4f);
+}
+
+typedef testing::TestWithParam<tuple<Point2f, Point2f, Point2f, Size2f, float>> minAreaRect_of_line;
+TEST_P(minAreaRect_of_line, accuracy)
+{
+    Point2f p1 = get<0>(GetParam());
+    Point2f p2 = get<1>(GetParam());
+    RotatedRect out = minAreaRect(std::vector<Point2f>{p1, p2});
+    EXPECT_EQ(out.center, get<2>(GetParam()));
+    EXPECT_EQ(out.size, get<3>(GetParam()));
+    EXPECT_NEAR(out.angle, get<4>(GetParam()), 1e-6);
+}
+INSTANTIATE_TEST_CASE_P(Imgproc, minAreaRect_of_line,
+        testing::Values(
+            std::make_tuple(Point2f(10, 15), Point2f(10, 25), Point2f(10, 20), Size2f(10, 0), -90.f),
+            std::make_tuple(Point2f(450, 500), Point2f(508, 500), Point2f(479, 500), Size2f(0, 58), -90.f),
+            std::make_tuple(Point2f(10, 20), Point2f(13, 16), Point2f(11.5, 18), Size2f(5, 0), -53.1301041f),
+            std::make_tuple(Point2f(9, 19), Point2f(4, 7), Point2f(6.5, 13), Size2f(0, 13), -22.6198654f)
+        ));
+
+typedef testing::TestWithParam<tuple<tuple<std::vector<Point>, Mat>, bool> > convexHull_monotonous;
+TEST_P(convexHull_monotonous, self_intersecting_contour)
+{
+    std::vector<Point> contour = get<0>(get<0>(GetParam()));
+    Mat ref = get<1>(get<0>(GetParam())).clone();
+    bool clockwise = get<1>(GetParam());
+    if (!clockwise)
+    {
+        std::reverse(ref.begin<int>(), ref.end<int>());
+    }
+
+    Mat indices;
+    convexHull(contour, indices, clockwise, false);
+
+    Point minLoc;
+    minMaxLoc(indices, nullptr, nullptr, &minLoc);
+    std::rotate(indices.begin<int>(), indices.begin<int>() + minLoc.y, indices.end<int>());
+
+    minMaxLoc(ref, nullptr, nullptr, &minLoc);
+    std::rotate(ref.begin<int>(), ref.begin<int>() + minLoc.y, ref.end<int>());
+
+    ASSERT_EQ( cvtest::norm(indices, ref, NORM_INF), 0) << indices;
+}
+INSTANTIATE_TEST_CASE_P(Imgproc, convexHull_monotonous,
+    testing::Combine(
+        testing::Values(
+            std::make_tuple(
+                std::vector<Point>{
+                    Point(3, 2), Point(3, 4), Point(2, 5), Point(1, 5),
+                    Point(2, 5), Point(3, 4), Point(6, 4), Point(6, 2)
+                },
+                (Mat_<int>(5, 1) << 0, 3, 4, 6, 7)
+            ),
+            std::make_tuple(
+                std::vector<Point>{
+                    Point(3, -2), Point(3, -4), Point(2, -5), Point(1, -5),
+                    Point(2, -5), Point(3, -4), Point(6, -4), Point(6, -2)
+                },
+                (Mat_<int>(5, 1) << 3, 0, 7, 6, 4)
+            ),
+            std::make_tuple(
+                std::vector<Point>{
+                    Point(1, 1), Point(1, 0), Point(0, 0), Point(1, 0), Point(0, 1)
+                },
+                (Mat_<int>(4, 1) << 0, 1, 2, 4)
+            )
+        ),
+        testing::Bool()
+));
 
 }} // namespace
 

@@ -1037,6 +1037,14 @@ static void flip(const Mat& src, Mat& dst, int flipcode)
     }
 }
 
+static void flip_inplace(Mat& dst, int flipcode)
+{
+    Mat m;
+    m.create(dst.size(), dst.type());
+    reference::flip(dst, m, flipcode);
+    memcpy(dst.ptr<uchar>(), m.ptr<uchar>(), dst.total() * dst.elemSize());
+}
+
 static void rotate(const Mat& src, Mat& dst, int rotateMode)
 {
     Mat tmp;
@@ -1091,6 +1099,36 @@ struct FlipOp : public BaseElemWiseOp
     void refop(const vector<Mat>& src, Mat& dst, const Mat&)
     {
         reference::flip(src[0], dst, flipcode);
+    }
+    void generateScalars(int, RNG& rng)
+    {
+        flipcode = rng.uniform(0, 3) - 1;
+    }
+    double getMaxErr(int)
+    {
+        return 0;
+    }
+    int flipcode;
+};
+
+struct FlipInplaceOp : public BaseElemWiseOp
+{
+    FlipInplaceOp() : BaseElemWiseOp(1, FIX_ALPHA+FIX_BETA+FIX_GAMMA, 1, 1, Scalar::all(0)) { flipcode = 0; }
+    void getRandomSize(RNG& rng, vector<int>& size)
+    {
+        cvtest::randomSize(rng, 2, 2, ARITHM_MAX_SIZE_LOG, size);
+    }
+    void op(const vector<Mat>& src, Mat& dst, const Mat&)
+    {
+        dst.create(src[0].size(), src[0].type());
+        memcpy(dst.ptr<uchar>(), src[0].ptr<uchar>(), src[0].total() * src[0].elemSize());
+        cv::flip(dst, dst, flipcode);
+    }
+    void refop(const vector<Mat>& src, Mat& dst, const Mat&)
+    {
+        dst.create(src[0].size(), src[0].type());
+        memcpy(dst.ptr<uchar>(), src[0].ptr<uchar>(), src[0].total() * src[0].elemSize());
+        reference::flip_inplace(dst, flipcode);
     }
     void generateScalars(int, RNG& rng)
     {
@@ -1789,6 +1827,7 @@ INSTANTIATE_TEST_CASE_P(Core_InRange, ElemWiseTest, ::testing::Values(ElemWiseOp
 INSTANTIATE_TEST_CASE_P(Core_FiniteMask, ElemWiseTest, ::testing::Values(ElemWiseOpPtr(new FiniteMaskOp)));
 
 INSTANTIATE_TEST_CASE_P(Core_Flip, ElemWiseTest, ::testing::Values(ElemWiseOpPtr(new FlipOp)));
+INSTANTIATE_TEST_CASE_P(Core_FlipInplace, ElemWiseTest, ::testing::Values(ElemWiseOpPtr(new FlipInplaceOp)));
 INSTANTIATE_TEST_CASE_P(Core_Rotate, ElemWiseTest, ::testing::Values(ElemWiseOpPtr(new RotateOp)));
 INSTANTIATE_TEST_CASE_P(Core_Transpose, ElemWiseTest, ::testing::Values(ElemWiseOpPtr(new TransposeOp)));
 INSTANTIATE_TEST_CASE_P(Core_SetIdentity, ElemWiseTest, ::testing::Values(ElemWiseOpPtr(new SetIdentityOp)));
@@ -2776,6 +2815,39 @@ TEST(BroadcastTo, basic) {
         Mat dst;
         broadcast(_src, shape, dst);
         fn_verify(ref, dst);
+    }
+}
+
+TEST(BroadcastTo, regression_dst_dp_zero_when_last_dim_is_one)
+{
+    std::vector<int> shape_src{10, 1, 1};
+    std::vector<float> data_src(10);
+    for (int i = 0; i < 10; ++i)
+    {
+        data_src[i] = static_cast<float>(i + 1);
+    }
+    Mat src(static_cast<int>(shape_src.size()), shape_src.data(), CV_32FC1, data_src.data());
+
+    std::vector<int> shape_dst{10, 5, 1};
+    Mat dst;
+
+    // Regression for broadcast() path where the innermost destination dimension is 1
+    // and flattened destination step can legitimately be 0.
+    ASSERT_NO_THROW(broadcast(src, shape_dst, dst));
+
+    EXPECT_EQ(dst.dims, 3);
+    EXPECT_EQ(dst.size[0], 10);
+    EXPECT_EQ(dst.size[1], 5);
+    EXPECT_EQ(dst.size[2], 1);
+    EXPECT_EQ(dst.type(), CV_32FC1);
+
+    for (int i = 0; i < shape_dst[0]; ++i)
+    {
+        for (int j = 0; j < shape_dst[1]; ++j)
+        {
+            int idx[] = {i, j, 0};
+            EXPECT_FLOAT_EQ(dst.at<float>(idx), static_cast<float>(i + 1));
+        }
     }
 }
 
@@ -3886,5 +3958,17 @@ TEST_P(Core_MaskTypeTest, MeanStdDev)
 
 INSTANTIATE_TEST_CASE_P(/**/, Core_MaskTypeTest, MaskType::all());
 
+// Still fails in 5.x: https://github.com/opencv/opencv/issues/28557
+TEST(Core_Arithm, DISABLED_mul_overflow_28557)
+{
+    uint16_t data[] = {5000, 60000, 5000, 60000, 5000, 60000};
+    cv::Mat m(1, 6, CV_16U, data);
+    cv::Mat res = m.mul(m);
+
+    for (int i = 0; i < 6; i++)
+    {
+        EXPECT_EQ(65535, res.at<uint16_t>(0, i));
+    }
+}
 
 }} // namespace

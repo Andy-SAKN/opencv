@@ -271,12 +271,18 @@ void tensorToIntVec(const Mat& tensor, std::vector<int>& vec)
     } else {
         int type = tensor.type();
         CV_Assert(type == CV_32S || type == CV_64S);
-        CV_Assert(tensor.dims <= 1);
+        // Accept tensors of any dimensionality; treat them as a flat vector.
+        CV_Assert(tensor.isContinuous());
         int size = (int)tensor.total();
         vec.resize(size);
-        for (int i = 0; i < size; i++) {
-            vec[i] = type == CV_32S ? tensor.at<int>(i) :
-                saturate_cast<int>(tensor.at<int64_t>(i));
+        if (type == CV_32S) {
+            const int* p = tensor.ptr<int>();
+            for (int i = 0; i < size; i++)
+                vec[i] = p[i];
+        } else {
+            const int64_t* p = tensor.ptr<int64_t>();
+            for (int i = 0; i < size; i++)
+                vec[i] = saturate_cast<int>(p[i]);
         }
     }
 }
@@ -289,12 +295,18 @@ void tensorToFloatVec(const Mat& tensor, std::vector<float>& vec)
         int type = tensor.type();
         MatShape shape = tensor.shape();
         CV_Assert(type == CV_32F || type == CV_16F);
-        CV_Assert(shape.dims <= 1);
+        // Accept tensors of any dimensionality; treat them as a flat vector.
+        CV_Assert(tensor.isContinuous());
         int size = (int)shape.total();
         vec.resize(size);
-        for (int i = 0; i < size; i++) {
-            vec[i] = type == CV_32F ? tensor.at<float>(i) :
-                (float)tensor.at<hfloat>(i);
+        if (type == CV_32F) {
+            const float* p = tensor.ptr<float>();
+            for (int i = 0; i < size; i++)
+                vec[i] = p[i];
+        } else {
+            const hfloat* p = tensor.ptr<hfloat>();
+            for (int i = 0; i < size; i++)
+                vec[i] = (float)p[i];
         }
     }
 }
@@ -311,20 +323,50 @@ void reshapeAndCopyFirst(InputArrayOfArrays inputs,
     int inpType = inputs.type(0);
     if (inpKind == _InputArray::STD_VECTOR_MAT) {
         Mat inp = inputs.getMat(0);
+        MatShape inpShape = inp.shape();
+        const size_t inpTotal = inpShape.total();
+        const size_t outTotal = shape.total();
         std::vector<Mat>& outref = outputs.getMatVecRef();
         outref.resize(1);
         outref[0].fit(shape, inpType);
         CV_Assert(outref[0].isContinuous());
+        if (inpTotal == 0 && outTotal == 0)
+            return;
         Mat inp_ = inp.reshape(0, shape);
-        if (inp_.data != outref[0].data)
-            inp_.copyTo(outref[0]);
+        if (inp_.data != outref[0].data) {
+            // Parallel memcpy for large buffers to avoid single-thread bottleneck
+            // on reshape-style layers that don't get in-place-allocated.
+            CV_Assert(inp_.isContinuous());
+            CV_Assert(outref[0].isContinuous());
+            size_t bytes = inpTotal * inp_.elemSize();
+            const size_t CHUNK_BYTES = 64 * 1024;
+            if (bytes > 2 * CHUNK_BYTES) {
+                const uchar* src = inp_.data;
+                uchar* dst = outref[0].data;
+                int nChunks = (int)((bytes + CHUNK_BYTES - 1) / CHUNK_BYTES);
+                parallel_for_(Range(0, nChunks), [&](const Range& r) {
+                    for (int i = r.start; i < r.end; i++) {
+                        size_t off = (size_t)i * CHUNK_BYTES;
+                        size_t len = std::min(CHUNK_BYTES, bytes - off);
+                        memcpy(dst + off, src + off, len);
+                    }
+                });
+            } else {
+                inp_.copyTo(outref[0]);
+            }
+        }
     }
     else {
         UMat inp = inputs.getUMat(0);
+        MatShape inpShape = inputs.shape(0);
+        const size_t inpTotal = inpShape.total();
+        const size_t outTotal = shape.total();
         std::vector<UMat>& outref = outputs.getUMatVecRef();
         outref.resize(1);
         outref[0].fit(shape, inpType);
         CV_Assert(outref[0].isContinuous());
+        if (inpTotal == 0 && outTotal == 0)
+            return;
         UMat inp_ = inp.reshape(0, shape);
         inp_.copyTo(outref[0]);
     }

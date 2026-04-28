@@ -681,6 +681,8 @@ void UMat::create(const MatShape& _shape, int _type, UMatUsageFlags _usageFlags)
         release();
     } else {
         create(_shape.dims, _shape.p, _type, _usageFlags);
+        size.layout = _shape.layout;
+        size.C = _shape.C;
     }
 }
 
@@ -715,6 +717,8 @@ void UMat::fit(const std::vector<int>& _shape, int _type, UMatUsageFlags _usageF
 void UMat::fit(const MatShape& _shape, int _type, UMatUsageFlags _usageFlags)
 {
     fit(_shape.dims, _shape.p, _type, _usageFlags);
+    size.layout = _shape.layout;
+    size.C = _shape.C;
 }
 
 void UMat::fit(int _rows, int _cols, int _type, UMatUsageFlags _usageFlags)
@@ -1216,6 +1220,10 @@ void UMat::copyTo(OutputArray _dst) const
         return;
     }
 
+    _dst.create( dims, size.p, stype );
+    if (empty())
+        return;
+
     size_t sz[CV_MAX_DIM] = {1}, srcofs[CV_MAX_DIM]={0}, dstofs[CV_MAX_DIM]={0};
     size_t esz = CV_ELEM_SIZE(stype);
     int i, d = std::max(dims, 1);
@@ -1224,10 +1232,6 @@ void UMat::copyTo(OutputArray _dst) const
     sz[d-1] *= esz;
     ndoffset(srcofs);
     srcofs[d-1] *= esz;
-
-    _dst.create( dims, size.p, stype );
-    if (empty())
-        return;
 
     if( _dst.isUMat() )
     {

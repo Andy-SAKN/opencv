@@ -166,8 +166,8 @@ protected:
     DomainDispatchMap domain_dispatch_map;
     std::string getLayerTypeDomain(const opencv_onnx::NodeProto& node_proto);
     const DispatchMap& getDispatchMap(const opencv_onnx::NodeProto& node_proto);
-    void buildDispatchMap_ONNX_AI(int opset_version);
-    void buildDispatchMap_COM_MICROSOFT(int opset_version);
+    void buildDispatchMap_ONNX_AI();
+    void buildDispatchMap_COM_MICROSOFT();
 
     // Domain: 'ai.onnx' (default)
     // URL: https://github.com/onnx/onnx/blob/master/docs/Operators.md
@@ -180,6 +180,7 @@ protected:
     void parseCastLike             (LayerParams& layerParams, const opencv_onnx::NodeProto& node_proto);
     void parseClip                 (LayerParams& layerParams, const opencv_onnx::NodeProto& node_proto);
     void parseConcat               (LayerParams& layerParams, const opencv_onnx::NodeProto& node_proto);
+    void parseLoop                 (LayerParams& layerParams, const opencv_onnx::NodeProto& node_proto);
     void parseIf                   (LayerParams& layerParams, const opencv_onnx::NodeProto& node_proto);
     void parseConstant             (LayerParams& layerParams, const opencv_onnx::NodeProto& node_proto);
     void parseConstantOfShape      (LayerParams& layerParams, const opencv_onnx::NodeProto& node_proto);
@@ -188,6 +189,7 @@ protected:
     void parseCumSum               (LayerParams& layerParams, const opencv_onnx::NodeProto& node_proto);
     void parseDepthSpaceOps        (LayerParams& layerParams, const opencv_onnx::NodeProto& node_proto);
     void parseDetectionOutput      (LayerParams& layerParams, const opencv_onnx::NodeProto& node_proto);
+    void parsePriorBox             (LayerParams& layerParams, const opencv_onnx::NodeProto& node_proto);
     void parseEinsum               (LayerParams& layerParams, const opencv_onnx::NodeProto& node_proto);
     void parseElementWise          (LayerParams& layerParams, const opencv_onnx::NodeProto& node_proto);
     void parseElu                  (LayerParams& layerParams, const opencv_onnx::NodeProto& node_proto);
@@ -202,6 +204,7 @@ protected:
     void parseInstanceNormalization(LayerParams& layerParams, const opencv_onnx::NodeProto& node_proto);
     void parseLayerNorm            (LayerParams& layerParams, const opencv_onnx::NodeProto& node_proto);
     void parseLeakyRelu            (LayerParams& layerParams, const opencv_onnx::NodeProto& node_proto);
+    void parseLpNormalization      (LayerParams& layerParams, const opencv_onnx::NodeProto& node_proto);
     void parseLRN                  (LayerParams& layerParams, const opencv_onnx::NodeProto& node_proto);
     void parseLSTM                 (LayerParams& layerParams, const opencv_onnx::NodeProto& node_proto);
     void parseMatMul               (LayerParams& layerParams, const opencv_onnx::NodeProto& node_proto);
@@ -220,6 +223,10 @@ protected:
     void parseOneHot               (LayerParams& layerParams, const opencv_onnx::NodeProto& node_proto);
     void parseDFT                  (LayerParams& layerParams, const opencv_onnx::NodeProto& node_proto);
     void parseDet                  (LayerParams& layerParams, const opencv_onnx::NodeProto& node_proto);
+    void parseEyeLike              (LayerParams& layerParams, const opencv_onnx::NodeProto& node_proto);
+    void parseBlackmanWindow       (LayerParams& layerParams, const opencv_onnx::NodeProto& node_proto);
+    void parseHannWindow           (LayerParams& layerParams, const opencv_onnx::NodeProto& node_proto);
+    void parseHammingWindow        (LayerParams& layerParams, const opencv_onnx::NodeProto& node_proto);
     void parseCenterCropPad        (LayerParams& layerParams, const opencv_onnx::NodeProto& node_proto);
     void parseGridSample           (LayerParams& layerParams, const opencv_onnx::NodeProto& node_proto);
     void parseNegativeLogLikelihoodLoss(LayerParams& layerParams, const opencv_onnx::NodeProto& node_proto);
@@ -247,10 +254,15 @@ protected:
     void parseBitShift             (LayerParams& layerParams, const opencv_onnx::NodeProto& node_proto);
     void parseBitwise              (LayerParams& layerParams, const opencv_onnx::NodeProto& node_proto);
     void parseBitwiseNot           (LayerParams& layerParams, const opencv_onnx::NodeProto& node_proto);
+    void parseRMSNormalization     (LayerParams& layerParams, const opencv_onnx::NodeProto& node_proto);
+    void parseRotaryEmbedding      (LayerParams& layerParams, const opencv_onnx::NodeProto& node_proto);
+    void parseRandomNormalLike     (LayerParams& layerParams, const opencv_onnx::NodeProto& node_proto);
+    void parseRoiAlign             (LayerParams& layerParams, const opencv_onnx::NodeProto& node_proto);
 
     // Domain: com.microsoft
     // URL: https://github.com/microsoft/onnxruntime/blob/master/docs/ContribOperators.md
     void parseAttention            (LayerParams& layerParams, const opencv_onnx::NodeProto& node_proto);
+    void parseAttentionOnnxAi      (LayerParams& layerParams, const opencv_onnx::NodeProto& node_proto);
     void parseDequantizeLinear     (LayerParams& layerParams, const opencv_onnx::NodeProto& node_proto);
     void parseQuantizeLinear       (LayerParams& layerParams, const opencv_onnx::NodeProto& node_proto);
     void parseCustomLayer          (LayerParams& layerParams, const opencv_onnx::NodeProto& node_proto);
@@ -264,11 +276,11 @@ protected:
     //void parseQSigmoid             (LayerParams& layerParams, const opencv_onnx::NodeProto& node_proto);
     //void parseQSoftmax             (LayerParams& layerParams, const opencv_onnx::NodeProto& node_proto);
 
-    int onnx_opset;  // OperatorSetIdProto for 'onnx' domain
     std::map<std::string, int> onnx_opset_map;  // map from OperatorSetIdProto
     void parseOperatorSet();
 
     const std::string str_domain_ai_onnx = "ai.onnx";
+    const std::string str_domain_com_microsoft = "com.microsoft";
 
     bool useLegacyNames;
     bool getParamUseLegacyNames()
@@ -281,7 +293,6 @@ protected:
 };
 
 ONNXImporter2::ONNXImporter2() :
-    onnx_opset(0),
     useLegacyNames(getParamUseLegacyNames())
 {
     netimpl = net.getImpl();
@@ -576,37 +587,24 @@ void ONNXImporter2::parseOperatorSet()
         const ::opencv_onnx::OperatorSetIdProto& opset_entry = model_proto.opset_import(i);
         const std::string& domain = opset_entry.has_domain() ? opset_entry.domain() : std::string();
         int version = opset_entry.has_version() ? opset_entry.version() : -1;
-        if (domain.empty() || domain == str_domain_ai_onnx)
-        {
-            // ONNX opset covered by specification: https://github.com/onnx/onnx/blob/master/docs/Operators.md
-            onnx_opset = std::max(onnx_opset, version);
-            onnx_opset_map[str_domain_ai_onnx] = onnx_opset;
-        }
+        const std::string domain_key = domain.empty() ? str_domain_ai_onnx : domain;
+
+        if (onnx_opset_map.find(domain_key) == onnx_opset_map.end())
+            onnx_opset_map[domain_key] = version;
         else
+            onnx_opset_map[domain_key] = std::max(
+                onnx_opset_map[domain_key], version);
+
+        if (
+            domain_key != str_domain_ai_onnx &&
+            domain_key != str_domain_com_microsoft)
         {
-            CV_LOG_DEBUG(NULL, "DNN/ONNX: using non-standard ONNX opset[" << i << "]: domain='" << domain << "' version=" << version);
-            onnx_opset_map[domain] = onnx_opset;
+            CV_LOG_INFO(NULL, "DNN/ONNX: found opset[" << i << "]: domain='" << domain_key << "' version=" << version);
         }
     }
+    buildDispatchMap_ONNX_AI();
+    buildDispatchMap_COM_MICROSOFT();
 
-    CV_LOG_INFO(NULL, "DNN/ONNX: ONNX opset version = " << onnx_opset);
-
-    buildDispatchMap_ONNX_AI(onnx_opset);
-    for (const auto& pair : onnx_opset_map)
-    {
-        if (pair.first == str_domain_ai_onnx)
-        {
-            continue;  // done above
-        }
-        else if (pair.first == "com.microsoft")
-        {
-            buildDispatchMap_COM_MICROSOFT(pair.second);
-        }
-        else
-        {
-            CV_LOG_INFO(NULL, "DNN/ONNX: unknown domain='" << pair.first << "' version=" << pair.second << ". No dispatch map, you may need to register 'custom' layers.");
-        }
-    }
 }
 
 /*static bool ifInt8Output(const String& layerType)
@@ -682,7 +680,7 @@ Net ONNXImporter2::parseModel()
     netimpl->mainGraph = mainGraph;
     netimpl->modelFormat = DNN_MODEL_ONNX;
     netimpl->originalLayout = DATA_LAYOUT_NCHW;
-    netimpl->onnx_opset = onnx_opset;
+    // netimpl->onnx_opset = onnx_opset;
 
     if (have_errors) {
         std::stringstream sstrm;
@@ -736,8 +734,24 @@ bool ONNXImporter2::parseValueInfo(const opencv_onnx::ValueInfoProto& valueInfoP
             const std::string& param_j = dimension.dim_param();
             val_j = net.findDim(param_j, true);
         } else {
-            raiseError();
-            return false;
+            // ONNX allows dimensions without dim_value and dim_param.
+            // Treat them as unnamed symbolic dimensions.
+            // NOTE: LSTM with unnamed dimensions is not ready in the new graph
+            // engine yet, so force fallback to classic parser.
+            if (curr_graph_proto)
+            {
+                const int n_nodes = curr_graph_proto->node_size();
+                for (int i = 0; i < n_nodes; ++i)
+                {
+                    const std::string& op = curr_graph_proto->node(i).op_type();
+                    if (op == "LSTM")
+                    {
+                        raiseError();
+                        return false;
+                    }
+                }
+            }
+            val_j = net.findDim("", true);
         }
         //CV_Assert(0 <= val_j && val_j <= INT_MAX);
         shape[j] = (int)val_j;
@@ -983,19 +997,6 @@ void ONNXImporter2::parseArgMinMax(LayerParams& layerParams, const opencv_onnx::
     addLayer(layerParams, node_proto);
 }
 
-static void setCeilMode(LayerParams& layerParams)
-{
-    // auto_pad attribute is deprecated and uses ceil
-    if (layerParams.has("pad_mode"))
-    {
-        layerParams.set("ceil_mode", true);
-    }
-    else if (!layerParams.has("ceil_mode"))
-    {
-        layerParams.set("ceil_mode", false);
-    }
-}
-
 void ONNXImporter2::parseMaxUnpool(LayerParams& layerParams, const opencv_onnx::NodeProto& node_proto)
 {
     layerParams.type = "MaxUnpool";
@@ -1033,19 +1034,17 @@ void ONNXImporter2::parseMaxUnpool(LayerParams& layerParams, const opencv_onnx::
 
 void ONNXImporter2::parseMaxPool(LayerParams& layerParams, const opencv_onnx::NodeProto& node_proto)
 {
-    int depth = layerParams.get<int>("depth", CV_32F);
-    layerParams.type = (depth == CV_8S) ? "PoolingInt8" : "Pooling";
-    layerParams.set("pool", "MAX");
-    setCeilMode(layerParams);
+    CV_CheckEQ(node_outputs.size(), 1u, "the new engine does not support MaxPool with 2 outputs yet");
+    layerParams.type = "MaxPool";
     addLayer(layerParams, node_proto);
 }
 
 void ONNXImporter2::parseAveragePool(LayerParams& layerParams, const opencv_onnx::NodeProto& node_proto)
 {
-    layerParams.type = "Pooling";
-    layerParams.set("pool", "AVE");
-    setCeilMode(layerParams);
-    layerParams.set("ave_pool_padded_area", framework_name == "pytorch");
+    layerParams.type = "AveragePool";
+    if (!layerParams.has("count_include_pad")) {
+        layerParams.set("count_include_pad", framework_name == "pytorch");
+    }
     addLayer(layerParams, node_proto);
 }
 
@@ -1197,6 +1196,7 @@ void ONNXImporter2::parseLSTM(LayerParams& layerParams, const opencv_onnx::NodeP
 
     layerParams.set("produce_cell_output", need_yc);
     layerParams.set("produce_output_yh", need_yh);
+    layerParams.set("produce_sequence_y", need_y);
 
 
     if (lstm_proto.input_size() == 8)
@@ -1206,10 +1206,10 @@ void ONNXImporter2::parseLSTM(LayerParams& layerParams, const opencv_onnx::NodeP
     addLayer(layerParams, lstm_proto);
 }
 
- // BUG: https://github.com/opencv/opencv/issues/26309
-void ONNXImporter2::parseGRU(LayerParams& layerParams, const opencv_onnx::NodeProto& node_proto_)
+void ONNXImporter2::parseGRU(LayerParams& layerParams, const opencv_onnx::NodeProto& node_proto)
 {
-    rememberMissingOp(node_proto_.op_type());
+    layerParams.type = "GRU";
+    addLayer(layerParams, node_proto);
 }
 
 void ONNXImporter2::parseImageScaler(LayerParams& layerParams, const opencv_onnx::NodeProto& node_proto)
@@ -1312,6 +1312,12 @@ void ONNXImporter2::parsePRelu(LayerParams& layerParams, const opencv_onnx::Node
     addLayer(layerParams, node_proto, 1);
 }
 
+void ONNXImporter2::parseLpNormalization(LayerParams& layerParams, const opencv_onnx::NodeProto& node_proto)
+{
+    layerParams.type = "NormalizeBBox";
+    addLayer(layerParams, node_proto);
+}
+
 void ONNXImporter2::parseLRN(LayerParams& layerParams, const opencv_onnx::NodeProto& node_proto)
 {
     replaceLayerParam(layerParams, "size", "local_size");
@@ -1326,39 +1332,8 @@ void ONNXImporter2::parseInstanceNormalization(LayerParams& layerParams, const o
 
 void ONNXImporter2::parseBatchNormalization(LayerParams& layerParams, const opencv_onnx::NodeProto& node_proto)
 {
-    if (node_proto.input_size() != 5)
-        CV_Error(Error::StsNotImplemented,
-                 "Expected input, scale, bias, mean and var");
-
-    layerParams.type = "BatchNorm";
-    replaceLayerParam(layerParams, "epsilon", "eps");
-    replaceLayerParam(layerParams, "spatial", "use_global_stats");
-
-    CV_Assert(net.isConstArg(node_inputs[3]));
-    CV_Assert(net.isConstArg(node_inputs[4]));
-
-    Mat meanData = net.argTensor(node_inputs[3]);
-    Mat stdData =  net.argTensor(node_inputs[4]);
-
-    layerParams.blobs.push_back(meanData);
-    layerParams.blobs.push_back(stdData);
-
-    if (!node_proto.input(1).empty()) {
-        layerParams.set("has_weight", true);
-        CV_Assert(net.isConstArg(node_inputs[1]));
-        layerParams.blobs.push_back(net.argTensor(node_inputs[1]));  // weightData
-    } else {
-        layerParams.set("has_weight", false);
-    }
-
-    if (!node_proto.input(2).empty()) {
-        layerParams.set("has_bias", true);
-        CV_Assert(net.isConstArg(node_inputs[1]));
-        layerParams.blobs.push_back(net.argTensor(node_inputs[2]));  // biasData
-    } else {
-        layerParams.set("has_bias", false);
-    }
-    addLayer(layerParams, node_proto, 1);
+    layerParams.type = "BatchNorm2";
+    addLayer(layerParams, node_proto);
 }
 
 void ONNXImporter2::parseGemm(LayerParams& layerParams, const opencv_onnx::NodeProto& node_proto)
@@ -1400,17 +1375,7 @@ void ONNXImporter2::parseConv(LayerParams& layerParams, const opencv_onnx::NodeP
 {
     int n_inputs = node_proto.input_size();
     CV_Assert(2 <= n_inputs && n_inputs <= 3);
-    layerParams.type = "Convolution";
-
-    if (net.isConstArg(node_inputs[1]) && (n_inputs == 2 || net.isConstArg(node_inputs[2]))) {
-        Mat weights = net.argTensor(node_inputs[1]);
-        layerParams.blobs.push_back(weights);
-        if (n_inputs > 2) {
-            Mat bias = net.argTensor(node_inputs[2]);
-            layerParams.blobs.push_back(bias);
-        }
-        n_inputs = 1;
-    }
+    layerParams.type = "Conv2";
     addLayer(layerParams, node_proto, n_inputs);
 }
 
@@ -1558,6 +1523,34 @@ void ONNXImporter2::parseConcat(LayerParams& layerParams, const opencv_onnx::Nod
     CV_CheckEQ(node_proto.output_size(), 1, "");
     layerParams.type = "Concat2";
     addLayer(layerParams, node_proto);
+}
+
+void ONNXImporter2::parseLoop(LayerParams& layerParams,
+                              const opencv_onnx::NodeProto& node_proto)
+{
+    // ONNX Loop: inputs = [M, cond, v0, v1, ...]; attribute "body" is a GraphProto.
+    CV_Assert(node_proto.input_size() >= 2);
+    layerParams.type = "Loop";
+
+    // Create Loop layer node in the current graph.
+    addLayer(layerParams, node_proto);
+
+    std::vector<Ptr<Graph> > subgraphs(1);
+    for (int i = 0; i < node_proto.attribute_size(); ++i)
+    {
+        const auto& attr = node_proto.attribute(i);
+        if (attr.name() == "body")
+        {
+            opencv_onnx::GraphProto body = attr.g();
+            Ptr<Graph> graph = parseGraph(&body, false);
+            subgraphs[0] = graph;
+        }
+    }
+
+    CV_Assert(!subgraphs[0].empty());
+
+    Ptr<Layer>& loopLayer = curr_prog.back();
+    *loopLayer->subgraphs() = subgraphs;
 }
 
 void ONNXImporter2::parseIf(LayerParams& layerParams,
@@ -1780,6 +1773,35 @@ void ONNXImporter2::parseDet(LayerParams& layerParams, const opencv_onnx::NodePr
     addLayer(layerParams, node_proto);
 }
 
+void ONNXImporter2::parseEyeLike(LayerParams& layerParams, const opencv_onnx::NodeProto& node_proto)
+{
+    layerParams.type = "EyeLike";
+    if (layerParams.has("dtype"))
+    {
+        int onnxDtype = layerParams.get<int>("dtype");
+        layerParams.set("dtype", dataType2cv((opencv_onnx::TensorProto_DataType)onnxDtype));
+    }
+    addLayer(layerParams, node_proto);
+}
+
+void ONNXImporter2::parseBlackmanWindow(LayerParams& layerParams, const opencv_onnx::NodeProto& node_proto)
+{
+    layerParams.type = "BlackmanWindow";
+    addLayer(layerParams, node_proto);
+}
+
+void ONNXImporter2::parseHannWindow(LayerParams& layerParams, const opencv_onnx::NodeProto& node_proto)
+{
+    layerParams.type = "HannWindow";
+    addLayer(layerParams, node_proto);
+}
+
+void ONNXImporter2::parseHammingWindow(LayerParams& layerParams, const opencv_onnx::NodeProto& node_proto)
+{
+    layerParams.type = "HammingWindow";
+    addLayer(layerParams, node_proto);
+}
+
 void ONNXImporter2::parseDFT(LayerParams& layerParams, const opencv_onnx::NodeProto& node_proto)
 {
     layerParams.type = "DFT";
@@ -1880,7 +1902,12 @@ void ONNXImporter2::parseSoftMax(LayerParams& layerParams, const opencv_onnx::No
 {
     const std::string& layer_type = node_proto.op_type();
     int axis;
-    if (onnx_opset != 0 && onnx_opset <= 11) {
+    if (onnx_opset_map.find(str_domain_ai_onnx) == onnx_opset_map.end()) {
+        CV_Error(Error::StsParseError , "ONNX/Softmax: opset for ai.onnx domain is not found");
+    }
+    const int opset_onnx_ai = onnx_opset_map[str_domain_ai_onnx];
+
+    if (opset_onnx_ai != 0 && opset_onnx_ai <= 11) {
         axis = layerParams.get<int>("axis", 1);
     } else {
         axis = layerParams.get<int>("axis", -1);
@@ -1894,6 +1921,17 @@ void ONNXImporter2::parseSoftMax(LayerParams& layerParams, const opencv_onnx::No
 void ONNXImporter2::parseDetectionOutput(LayerParams& layerParams, const opencv_onnx::NodeProto& node_proto)
 {
     CV_CheckEQ(node_proto.input_size(), 3, "");
+    if (layerParams.has("code_type"))
+    {
+        int ct = layerParams.get<int>("code_type");
+        layerParams.set("code_type", ct == 2 ? "CENTER_SIZE" : "CORNER");
+    }
+    addLayer(layerParams, node_proto);
+}
+
+void ONNXImporter2::parsePriorBox(LayerParams& layerParams, const opencv_onnx::NodeProto& node_proto)
+{
+    layerParams.type = "PriorBox";
     addLayer(layerParams, node_proto);
 }
 
@@ -1974,6 +2012,7 @@ void ONNXImporter2::parseLayerNorm(LayerParams& layerParams, const opencv_onnx::
         }
         n_inputs = 1;
     }
+    layerParams.type = "LayerNormalization2";
     addLayer(layerParams, node_proto, n_inputs);
 }
 
@@ -2020,6 +2059,17 @@ void ONNXImporter2::parseQuantizeLinear(LayerParams& layerParams, const opencv_o
     {
         layerParams.set<int>("output_dtype", dataType2cv((opencv_onnx::TensorProto_DataType)dt));
     }
+    addLayer(layerParams, node_proto);
+}
+
+void ONNXImporter2::parseRMSNormalization(LayerParams& layerParams, const opencv_onnx::NodeProto& node_proto)
+{
+    addLayer(layerParams, node_proto);
+}
+
+void ONNXImporter2::parseRandomNormalLike(LayerParams& layerParams, const opencv_onnx::NodeProto& node_proto)
+{
+    layerParams.type = "RandomNormalLike";
     addLayer(layerParams, node_proto);
 }
 
@@ -2576,6 +2626,26 @@ void ONNXImporter2::parseQSoftmax(LayerParams& layerParams, const opencv_onnx::N
     addLayer(layerParams, node_proto);
 }*/
 
+
+void ONNXImporter2::parseRotaryEmbedding(LayerParams& params, const opencv_onnx::NodeProto& node_proto) {
+    int i, n_inputs = node_proto.input_size();
+
+    for (i = 1; i < n_inputs; i++) {
+        if (!net.isConstArg(node_inputs[i]))
+            break;
+    }
+
+    if (i == n_inputs) {
+        for (i = 1; i < n_inputs; i++) {
+            Mat blob = net.argTensor(node_inputs[i]);
+            params.blobs.push_back(blob);
+        }
+        n_inputs = 1;
+    }
+
+    addLayer(params, node_proto, n_inputs);
+}
+
 void ONNXImporter2::parseAttention(LayerParams& params, const opencv_onnx::NodeProto& node_proto) {
     int i, n_inputs = node_proto.input_size();
     CV_CheckTrue(params.has("num_heads"), "ONNXImporter2/parseAttention: num_heads is required but missing");
@@ -2600,11 +2670,40 @@ void ONNXImporter2::parseAttention(LayerParams& params, const opencv_onnx::NodeP
     addLayer(params, node_proto, n_inputs);
 }
 
+void ONNXImporter2::parseAttentionOnnxAi(LayerParams& params, const opencv_onnx::NodeProto& node_proto) {
+    int i, n_inputs = node_proto.input_size();
+
+    for (i = 1; i < n_inputs; i++) {
+        if (!net.isConstArg(node_inputs[i]))
+            break;
+    }
+
+    if (i == n_inputs) {
+        for (i = 1; i < n_inputs; i++) {
+            Mat blob = net.argTensor(node_inputs[i]);
+            params.blobs.push_back(blob);
+        }
+        n_inputs = 1;
+    }
+    params.type = "AttentionOnnxAi";
+
+    addLayer(params, node_proto, n_inputs);
+}
+
+void ONNXImporter2::parseRoiAlign(LayerParams& layerParams, const opencv_onnx::NodeProto& node_proto)
+{
+    layerParams.type = "RoiAlign";
+    if (!layerParams.has("coordinate_transformation_mode")) {
+        int onnx_opset = onnx_opset_map.count(str_domain_ai_onnx) ? onnx_opset_map.at(str_domain_ai_onnx) : 16;
+        layerParams.set("coordinate_transformation_mode", onnx_opset < 16 ? "output_half_pixel" : "half_pixel");
+    }
+    addLayer(layerParams, node_proto, 3);
+}
+
 // Domain: ai.onnx (default)
 // URL: https://github.com/onnx/onnx/blob/master/docs/Operators.md
-void ONNXImporter2::buildDispatchMap_ONNX_AI(int opset_version)
+void ONNXImporter2::buildDispatchMap_ONNX_AI()
 {
-    CV_UNUSED(opset_version);
     DispatchMap dispatch;
 
     dispatch["ArgMax"] = dispatch["ArgMin"] = &ONNXImporter2::parseArgMinMax;
@@ -2630,6 +2729,7 @@ void ONNXImporter2::buildDispatchMap_ONNX_AI(int opset_version)
     dispatch["Abs"] = &ONNXImporter2::parseAbs;
     dispatch["PRelu"] = &ONNXImporter2::parsePRelu;
     dispatch["NonZero"] = &ONNXImporter2::parseNonZero;
+    dispatch["LpNormalization"] = &ONNXImporter2::parseLpNormalization;
     dispatch["LRN"] = &ONNXImporter2::parseLRN;
     dispatch["InstanceNormalization"] = &ONNXImporter2::parseInstanceNormalization;
     dispatch["BatchNormalization"] = &ONNXImporter2::parseBatchNormalization;
@@ -2651,6 +2751,7 @@ void ONNXImporter2::buildDispatchMap_ONNX_AI(int opset_version)
     dispatch["Gather"] = &ONNXImporter2::parseGather;
     dispatch["GatherElements"] = &ONNXImporter2::parseGatherElements;
     dispatch["Concat"] = &ONNXImporter2::parseConcat;
+    dispatch["Loop"] = &ONNXImporter2::parseLoop;
     dispatch["If"] = &ONNXImporter2::parseIf;
     dispatch["Resize"] = &ONNXImporter2::parseResize2;
     dispatch["Size"] = &ONNXImporter2::parseSize;
@@ -2662,8 +2763,13 @@ void ONNXImporter2::buildDispatchMap_ONNX_AI(int opset_version)
     dispatch["OneHot"] = &ONNXImporter2::parseOneHot;
     dispatch["DFT"] = &ONNXImporter2::parseDFT;
     dispatch["Det"] = &ONNXImporter2::parseDet;
+    dispatch["EyeLike"] = &ONNXImporter2::parseEyeLike;
+    dispatch["BlackmanWindow"] = &ONNXImporter2::parseBlackmanWindow;
+    dispatch["HannWindow"] = &ONNXImporter2::parseHannWindow;
+    dispatch["HammingWindow"] = &ONNXImporter2::parseHammingWindow;
     dispatch["GridSample"] = &ONNXImporter2::parseGridSample;
     dispatch["AffineGrid"] = &ONNXImporter2::parseAffineGrid;
+    dispatch["RoiAlign"] = &ONNXImporter2::parseRoiAlign;
     dispatch["Upsample"] = &ONNXImporter2::parseUpsample;
     dispatch["BitShift"] = &ONNXImporter2::parseBitShift;
     dispatch["BitwiseAnd"] = &ONNXImporter2::parseBitwise;
@@ -2673,14 +2779,18 @@ void ONNXImporter2::buildDispatchMap_ONNX_AI(int opset_version)
     dispatch["NonMaxSuprression"] = &ONNXImporter2::parseNonMaxSuprression;
     dispatch["SoftMax"] = dispatch["Softmax"] = dispatch["LogSoftmax"] = &ONNXImporter2::parseSoftMax;
     dispatch["DetectionOutput"] = &ONNXImporter2::parseDetectionOutput;
+    dispatch["PriorBox"] = &ONNXImporter2::parsePriorBox;
     dispatch["CumSum"] = &ONNXImporter2::parseCumSum;
     dispatch["SpaceToDepth"] = dispatch["DepthToSpace"] = &ONNXImporter2::parseDepthSpaceOps;
     dispatch["ScatterElements"] = dispatch["Scatter"] = dispatch["ScatterND"] = &ONNXImporter2::parseScatter;
     dispatch["Tile"] = &ONNXImporter2::parseTile;
     dispatch["LayerNormalization"] = &ONNXImporter2::parseLayerNorm;
     dispatch["GroupNormalization"] = &ONNXImporter2::parseInstanceNormalization;
+    dispatch["RMSNormalization"] = &ONNXImporter2::parseRMSNormalization;
+    dispatch["RotaryEmbedding"] = &ONNXImporter2::parseRotaryEmbedding;
     dispatch["NegativeLogLikelihoodLoss"] = &ONNXImporter2::parseNegativeLogLikelihoodLoss;
     dispatch["SoftmaxCrossEntropyLoss"]   = &ONNXImporter2::parseSoftmaxCrossEntropyLoss;
+    // @TODO@ONNX: Add support for SDPA
 
     dispatch["Equal"] = dispatch["Greater"] = dispatch["Less"] = dispatch["Pow"] = dispatch["Add"] =
             dispatch["Sub"] = dispatch["Mul"] = dispatch["Div"] = dispatch["GreaterOrEqual"] =
@@ -2691,6 +2801,7 @@ void ONNXImporter2::buildDispatchMap_ONNX_AI(int opset_version)
     dispatch["Range"] = &ONNXImporter2::parseRange;
     dispatch["Einsum"] = &ONNXImporter2::parseEinsum;
     dispatch["TopK"] = &ONNXImporter2::parseTopK2;
+    dispatch["RandomNormalLike"] = &ONNXImporter2::parseRandomNormalLike;
 
     std::vector<std::string> simpleLayers {
         "Acos", "Acosh", "Asin", "Asinh", "Atan", "Atanh", "Ceil", "Celu", "Cos",
@@ -2714,16 +2825,15 @@ void ONNXImporter2::buildDispatchMap_ONNX_AI(int opset_version)
     // com.microsft: This operator is added for compatibility via onnx graph simplifier.
     //               Opset domain cannot be modified from onnx_graph_simplifier.cpp so this
     //               operator cannot be parsed if only added in buildDispatchMap_COM_MICROSOFT
-    dispatch["Attention"] = &ONNXImporter2::parseAttention;
+    dispatch["Attention"] = &ONNXImporter2::parseAttentionOnnxAi;
 
     domain_dispatch_map[str_domain_ai_onnx] = dispatch;
 }
 
 // Domain: com.microsoft
 // URL: https://github.com/microsoft/onnxruntime/blob/master/docs/ContribOperators.md
-void ONNXImporter2::buildDispatchMap_COM_MICROSOFT(int opset_version)
+void ONNXImporter2::buildDispatchMap_COM_MICROSOFT()
 {
-    CV_UNUSED(opset_version);
     DispatchMap dispatch;
 
     // BUG: https://github.com/opencv/opencv/issues/26310
@@ -2736,7 +2846,7 @@ void ONNXImporter2::buildDispatchMap_COM_MICROSOFT(int opset_version)
     //dispatch["QLinearSoftmax"] = &ONNXImporter2::parseQSoftmax;
     dispatch["Attention"] = &ONNXImporter2::parseAttention;
 
-    domain_dispatch_map["com.microsoft"] = dispatch;
+    domain_dispatch_map[str_domain_com_microsoft] = dispatch;
 }
 
 
@@ -2746,9 +2856,29 @@ Net readNetFromONNX2(const String& onnxFile)
     Net net = importer.parseFile(onnxFile.c_str());
     if (net.getMainGraph()) {
         net.getImpl()->modelFileName = onnxFile;
+        //net.setTracingMode(DNN_TRACE_ALL);
     }
     return net;
 }
+
+#ifdef HAVE_ONNXRUNTIME
+Net readNetFromONNX2_ORT(const String& onnxFile)
+{
+    Net net;
+    auto impl = net.getImpl();
+    impl->modelFileName = onnxFile;
+    impl->modelFormat = DNN_MODEL_ONNX;
+    impl->useOrtEngine = true;
+    impl->ortNeedsReinit = true;
+
+    // Create an empty main graph placeholder so that callers can detect
+    // that a model has been loaded (e.g. !net.empty()).
+    impl->newGraph("ort_deferred", {}, true);
+
+    CV_LOG_INFO(NULL, "DNN/ONNX/ORT: model registered for deferred ORT session: " << onnxFile);
+    return net;
+}
+#endif  // HAVE_ONNXRUNTIME
 
 Net readNetFromONNX2(const char* buffer, size_t size)
 {

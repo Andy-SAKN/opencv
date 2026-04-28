@@ -209,9 +209,9 @@ bool pyopencv_to(PyObject* o, Mat& m, const ArgInfo& info)
     if (ismultichannel)
     {
         int channels = ndims >= 1 ? (int)_sizes[ndims - 1] : 1;
-        if (channels > CV_CN_MAX)
+        if (channels < 1 || channels > CV_CN_MAX)
         {
-            failmsg("%s unable to wrap channels, too high (%d > CV_CN_MAX=%d)", info.name, (int)channels, (int)CV_CN_MAX);
+            failmsg("%s unable to wrap channels, invalid count (%d, must be in [1, %d])", info.name, (int)channels, (int)CV_CN_MAX);
             return false;
         }
         ndims--;
@@ -714,28 +714,29 @@ bool pyopencv_to(PyObject* obj, String &value, const ArgInfo& info)
     std::string str;
 
 #if ((PY_VERSION_HEX >= 0x03060000) && !defined(Py_LIMITED_API)) || (Py_LIMITED_API >= 0x03060000)
+    PyObject* path_obj = NULL;
     if (info.pathlike)
     {
-        obj = PyOS_FSPath(obj);
+        path_obj = PyOS_FSPath(obj);
         if (PyErr_Occurred())
         {
             failmsg("Expected '%s' to be a str or path-like object", info.name);
             return false;
         }
+        obj = path_obj;
     }
 #endif
+
+    bool result = false;
     if (getUnicodeString(obj, str))
     {
         value = str;
-        return true;
+        result = true;
     }
     else
     {
-        // If error hasn't been already set by Python conversion functions
         if (!PyErr_Occurred())
         {
-            // Direct access to underlying slots of PyObjectType is not allowed
-            // when limited API is enabled
 #ifdef Py_LIMITED_API
             failmsg("Can't convert object to 'str' for '%s'", info.name);
 #else
@@ -744,7 +745,12 @@ bool pyopencv_to(PyObject* obj, String &value, const ArgInfo& info)
 #endif
         }
     }
-    return false;
+
+#if ((PY_VERSION_HEX >= 0x03060000) && !defined(Py_LIMITED_API)) || (Py_LIMITED_API >= 0x03060000)
+    Py_XDECREF(path_obj);
+#endif
+
+    return result;
 }
 
 template<>

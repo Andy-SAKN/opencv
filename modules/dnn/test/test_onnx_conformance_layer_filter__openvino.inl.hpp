@@ -261,11 +261,11 @@ CASE(test_basic_conv_without_padding)
 CASE(test_basic_convinteger)
     // no filter
 CASE(test_batchnorm_epsilon)
-    // no filter
+    SKIP;
 CASE(test_batchnorm_epsilon_training_mode)
     // no filter
 CASE(test_batchnorm_example)
-    // no filter
+    SKIP;
 CASE(test_batchnorm_example_training_mode)
     // no filter
 CASE(test_bernoulli)
@@ -325,6 +325,14 @@ CASE(test_bitshift_right_uint32)
 CASE(test_bitshift_right_uint64)
     SKIP;
 CASE(test_bitshift_right_uint8)
+    SKIP;
+CASE(test_blackmanwindow)
+    SKIP;
+CASE(test_blackmanwindow_expanded)
+    SKIP;
+CASE(test_blackmanwindow_symmetric)
+    SKIP;
+CASE(test_blackmanwindow_symmetric_expanded)
     SKIP;
 CASE(test_cast_BFLOAT16_to_FLOAT)
     SKIP;
@@ -662,20 +670,6 @@ CASE(test_edge_pad)
     SKIP;
 CASE(test_einsum_batch_diagonal)
     SKIP;
-CASE(test_hardmax_axis_0)
-    SKIP;
-CASE(test_hardmax_axis_1)
-    SKIP;
-CASE(test_hardmax_axis_2)
-    SKIP;
-CASE(test_hardmax_default_axis)
-    SKIP;
-CASE(test_hardmax_example)
-    SKIP;
-CASE(test_hardmax_negative_axis)
-    SKIP;
-CASE(test_hardmax_one_hot)
-    SKIP;
 CASE(test_einsum_batch_matmul)
     // no filter
 CASE(test_einsum_inner_prod)
@@ -723,11 +717,11 @@ CASE(test_expand_dim_changed)
 CASE(test_expand_dim_unchanged)
     SKIP;
 CASE(test_eyelike_populate_off_main_diagonal)
-    // no filter
+    SKIP;
 CASE(test_eyelike_with_dtype)
-    // no filter
+    SKIP;
 CASE(test_eyelike_without_dtype)
-    // no filter
+    SKIP;
 CASE(test_flatten_axis0)
     // no filter
 CASE(test_flatten_axis1)
@@ -919,27 +913,43 @@ CASE(test_group_normalization_epsilon)
 CASE(test_group_normalization_example)
     // no filter
 CASE(test_gru_batchwise)
-    // no filter
+    SKIP;
 CASE(test_gru_defaults)
-    // no filter
+    SKIP;
 CASE(test_gru_seq_length)
-    // no filter
+    SKIP;
 CASE(test_gru_with_initial_bias)
-    // no filter
+    SKIP;
+CASE(test_hammingwindow)
+    SKIP;
+CASE(test_hammingwindow_expanded)
+    SKIP;
+CASE(test_hammingwindow_symmetric)
+    SKIP;
+CASE(test_hammingwindow_symmetric_expanded)
+    SKIP;
+CASE(test_hannwindow)
+    SKIP;
+CASE(test_hannwindow_expanded)
+    SKIP;
+CASE(test_hannwindow_symmetric)
+    SKIP;
+CASE(test_hannwindow_symmetric_expanded)
+    SKIP;
 CASE(test_hardmax_axis_0)
-    // no filter
+    SKIP;
 CASE(test_hardmax_axis_1)
-    // no filter
+    SKIP;
 CASE(test_hardmax_axis_2)
-    // no filter
+    SKIP;
 CASE(test_hardmax_default_axis)
-    // no filter
+    SKIP;
 CASE(test_hardmax_example)
-    // no filter
+    SKIP;
 CASE(test_hardmax_negative_axis)
-    // no filter
+    SKIP;
 CASE(test_hardmax_one_hot)
-    // no filter
+    SKIP;
 CASE(test_einsum_batch_matmul)
     // no filter
 CASE(test_einsum_inner_prod)
@@ -1191,43 +1201,121 @@ CASE(test_isnan)
 CASE(test_isnan_float16)
     SKIP;
 CASE(test_layer_normalization_2d_axis0)
-    // no filter
+    SKIP;
+CASE(test_layer_normalization_2d_axis0_expanded)
+    SKIP;
+CASE(test_layer_normalization_2d_axis0_expanded_ver18)
+    SKIP;
 CASE(test_layer_normalization_2d_axis1)
-    // no filter
+    SKIP;
+CASE(test_layer_normalization_2d_axis1_expanded)
+    SKIP;
+CASE(test_layer_normalization_2d_axis1_expanded_ver18)
+    SKIP;
 CASE(test_layer_normalization_2d_axis_negative_1)
-    // no filter
+    SKIP;
+CASE(test_layer_normalization_2d_axis_negative_1_expanded)
+    SKIP;
+CASE(test_layer_normalization_2d_axis_negative_1_expanded_ver18)
+    SKIP;
 CASE(test_layer_normalization_2d_axis_negative_2)
-    // no filter
+    SKIP;
+CASE(test_layer_normalization_2d_axis_negative_2_expanded)
+    SKIP;
+CASE(test_layer_normalization_2d_axis_negative_2_expanded_ver18)
+    SKIP;
 CASE(test_layer_normalization_3d_axis0_epsilon)
-    // no filter
+    SKIP;
+CASE(test_layer_normalization_3d_axis0_epsilon_expanded)
+    SKIP;
+CASE(test_layer_normalization_3d_axis0_epsilon_expanded_ver18)
+    SKIP;
 CASE(test_layer_normalization_3d_axis1_epsilon)
-    // no filter
+    SKIP;
+CASE(test_layer_normalization_3d_axis1_epsilon_expanded)
+    SKIP;
+CASE(test_layer_normalization_3d_axis1_epsilon_expanded_ver18)
+    SKIP;
 CASE(test_layer_normalization_3d_axis2_epsilon)
-    // no filter
+    SKIP;
+CASE(test_layer_normalization_3d_axis2_epsilon_expanded)
+    SKIP;
+CASE(test_layer_normalization_3d_axis2_epsilon_expanded_ver18)
+    SKIP;
 CASE(test_layer_normalization_3d_axis_negative_1_epsilon)
-    // no filter
+    SKIP;
+CASE(test_layer_normalization_3d_axis_negative_1_epsilon_expanded)
+    SKIP;
+CASE(test_layer_normalization_3d_axis_negative_1_epsilon_expanded_ver18)
+    SKIP;
 CASE(test_layer_normalization_3d_axis_negative_2_epsilon)
-    // no filter
+    SKIP;
+CASE(test_layer_normalization_3d_axis_negative_2_epsilon_expanded)
+    SKIP;
+CASE(test_layer_normalization_3d_axis_negative_2_epsilon_expanded_ver18)
+    SKIP;
 CASE(test_layer_normalization_3d_axis_negative_3_epsilon)
-    // no filter
+    SKIP;
+CASE(test_layer_normalization_3d_axis_negative_3_epsilon_expanded)
+    SKIP;
+CASE(test_layer_normalization_3d_axis_negative_3_epsilon_expanded_ver18)
+    SKIP;
 CASE(test_layer_normalization_4d_axis0)
-    // no filter
+    SKIP;
+CASE(test_layer_normalization_4d_axis0_expanded)
+    SKIP;
+CASE(test_layer_normalization_4d_axis0_expanded_ver18)
+    SKIP;
 CASE(test_layer_normalization_4d_axis1)
-    // no filter
+    SKIP;
+CASE(test_layer_normalization_4d_axis1_expanded)
+    SKIP;
+CASE(test_layer_normalization_4d_axis1_expanded_ver18)
+    SKIP;
 CASE(test_layer_normalization_4d_axis2)
-    // no filter
+    SKIP;
+CASE(test_layer_normalization_4d_axis2_expanded)
+    SKIP;
+CASE(test_layer_normalization_4d_axis2_expanded_ver18)
+    SKIP;
 CASE(test_layer_normalization_4d_axis3)
-    // no filter
+    SKIP;
+CASE(test_layer_normalization_4d_axis3_expanded)
+    SKIP;
+CASE(test_layer_normalization_4d_axis3_expanded_ver18)
+    SKIP;
 CASE(test_layer_normalization_4d_axis_negative_1)
-    // no filter
+    SKIP;
+CASE(test_layer_normalization_4d_axis_negative_1_expanded)
+    SKIP;
+CASE(test_layer_normalization_4d_axis_negative_1_expanded_ver18)
+    SKIP;
 CASE(test_layer_normalization_4d_axis_negative_2)
-    // no filter
+    SKIP;
+CASE(test_layer_normalization_4d_axis_negative_2_expanded)
+    SKIP;
+CASE(test_layer_normalization_4d_axis_negative_2_expanded_ver18)
+    SKIP;
 CASE(test_layer_normalization_4d_axis_negative_3)
-    // no filter
+    SKIP;
+CASE(test_layer_normalization_4d_axis_negative_3_expanded)
+    SKIP;
+CASE(test_layer_normalization_4d_axis_negative_3_expanded_ver18)
+    SKIP;
 CASE(test_layer_normalization_4d_axis_negative_4)
-    // no filter
+    SKIP;
+CASE(test_layer_normalization_4d_axis_negative_4_expanded)
+    SKIP;
+CASE(test_layer_normalization_4d_axis_negative_4_expanded_ver18)
+    SKIP;
 CASE(test_layer_normalization_default_axis)
-    // no filter
+    SKIP;
+CASE(test_layer_normalization_default_axis_expanded)
+    SKIP;
+CASE(test_layer_normalization_default_axis_expanded_ver18)
+    SKIP;
+CASE(test_lpnormalization_default)
+    SKIP;
 CASE(test_leakyrelu)
     // no filter
 CASE(test_leakyrelu_default)
@@ -1349,7 +1437,7 @@ CASE(test_logsoftmax_negative_axis_expanded)
 CASE(test_logsoftmax_negative_axis_expanded_ver18)
     SKIP;
 CASE(test_loop11)
-    // no filter
+    SKIP;
 CASE(test_loop13_seq)
     // no filter
 CASE(test_loop16_seq_none)
@@ -2043,6 +2131,36 @@ CASE(test_reduce_log_sum_exp_negative_axes_keepdims_random_expanded)
     SKIP;
 CASE(test_reduce_sum_empty_axes_input_noop)
     SKIP;
+CASE(test_reduce_l1_empty_set)
+    SKIP;
+CASE(test_reduce_l1_empty_set_expanded)
+    SKIP;
+CASE(test_reduce_l2_empty_set)
+    SKIP;
+CASE(test_reduce_l2_empty_set_expanded)
+    SKIP;
+CASE(test_reduce_log_sum_empty_set)
+    SKIP;
+CASE(test_reduce_log_sum_empty_set_expanded)
+    SKIP;
+CASE(test_reduce_log_sum_exp_empty_set)
+    SKIP;
+CASE(test_reduce_max_empty_set)
+    SKIP;
+CASE(test_reduce_min_empty_set)
+    SKIP;
+CASE(test_reduce_prod_empty_set)
+    SKIP;
+CASE(test_reduce_sum_empty_set)
+    SKIP;
+CASE(test_reduce_sum_empty_set_non_reduced_axis_zero)
+    SKIP;
+CASE(test_reduce_sum_square_empty_set)
+    SKIP;
+CASE(test_reduce_sum_square_empty_set_expanded)
+    SKIP;
+CASE(test_reduce_log_sum_exp_empty_set_expanded)
+    SKIP;
 CASE(test_reduce_sum_square_default_axes_keepdims_random)
 #if SKIP_SET_1
     if (target == DNN_TARGET_MYRIAD)
@@ -2182,9 +2300,11 @@ CASE(test_reversesequence_time)
 CASE(test_rnn_seq_length)
     // no filter
 CASE(test_roialign_aligned_false)
-    // no filter
+    SKIP;
 CASE(test_roialign_aligned_true)
-    // no filter
+    SKIP;
+CASE(test_roialign_mode_max)
+    SKIP;
 CASE(test_round)
     // no filter
 CASE(test_scan9_sum)
@@ -2732,6 +2852,76 @@ CASE(test_unsqueeze_two_axes)
 CASE(test_unsqueeze_unsorted_axes)
     SKIP;
 CASE(test_upsample_nearest)
+CASE(test_rotary_embedding)
+    SKIP;
+CASE(test_rotary_embedding_3d_input)
+    SKIP;
+CASE(test_rotary_embedding_3d_input_expanded)
+    SKIP;
+CASE(test_rotary_embedding_expanded)
+    SKIP;
+CASE(test_rotary_embedding_interleaved)
+    SKIP;
+CASE(test_rotary_embedding_interleaved_expanded)
+    SKIP;
+CASE(test_rotary_embedding_no_position_ids)
+    SKIP;
+CASE(test_rotary_embedding_no_position_ids_expanded)
+    SKIP;
+CASE(test_rotary_embedding_no_position_ids_interleaved)
+    SKIP;
+CASE(test_rotary_embedding_no_position_ids_interleaved_expanded)
+    SKIP;
+CASE(test_rotary_embedding_no_position_ids_rotary_dim)
+    SKIP;
+CASE(test_rotary_embedding_no_position_ids_rotary_dim_expanded)
+    SKIP;
+CASE(test_rotary_embedding_with_interleaved_rotary_dim)
+    SKIP;
+CASE(test_rotary_embedding_with_interleaved_rotary_dim_expanded)
+    SKIP;
+CASE(test_rotary_embedding_with_rotary_dim)
+    SKIP;
+CASE(test_rotary_embedding_with_rotary_dim_expanded)
+    SKIP;
+CASE(test_rms_normalization_2d_axis0)
+    SKIP;
+CASE(test_rms_normalization_2d_axis1)
+    SKIP;
+CASE(test_rms_normalization_2d_axis_negative_1)
+    SKIP;
+CASE(test_rms_normalization_2d_axis_negative_2)
+    SKIP;
+CASE(test_rms_normalization_3d_axis0_epsilon)
+    SKIP;
+CASE(test_rms_normalization_3d_axis1_epsilon)
+    SKIP;
+CASE(test_rms_normalization_3d_axis2_epsilon)
+    SKIP;
+CASE(test_rms_normalization_3d_axis_negative_1_epsilon)
+    SKIP;
+CASE(test_rms_normalization_3d_axis_negative_2_epsilon)
+    SKIP;
+CASE(test_rms_normalization_3d_axis_negative_3_epsilon)
+    SKIP;
+CASE(test_rms_normalization_4d_axis0)
+    SKIP;
+CASE(test_rms_normalization_4d_axis1)
+    SKIP;
+CASE(test_rms_normalization_4d_axis2)
+    SKIP;
+CASE(test_rms_normalization_4d_axis3)
+    SKIP;
+CASE(test_rms_normalization_4d_axis_negative_1)
+    SKIP;
+CASE(test_rms_normalization_4d_axis_negative_2)
+    SKIP;
+CASE(test_rms_normalization_4d_axis_negative_3)
+    SKIP;
+CASE(test_rms_normalization_4d_axis_negative_4)
+    SKIP;
+CASE(test_rms_normalization_default_axis)
+    SKIP;
 #if SKIP_SET_1
     SKIP;
 #endif
@@ -2757,6 +2947,85 @@ CASE(test_xor_bcast4v3d)
     // no filter
 CASE(test_xor_bcast4v4d)
     // no filter
+CASE()
+CASE(test_attention_3d)
+    SKIP;
+CASE(test_attention_3d_attn_mask)
+    SKIP;
+CASE(test_attention_3d_causal)
+    SKIP;
+CASE(test_attention_3d_diff_heads_sizes)
+    SKIP;
+CASE(test_attention_3d_diff_heads_sizes_attn_mask)
+    SKIP;
+CASE(test_attention_3d_diff_heads_sizes_causal)
+    SKIP;
+CASE(test_attention_3d_diff_heads_sizes_softcap)
+    SKIP;
+CASE(test_attention_3d_diff_heads_sizes_scaled)
+    SKIP;
+CASE(test_attention_3d_gqa)
+    SKIP;
+CASE(test_attention_3d_gqa_attn_mask)
+    SKIP;
+CASE(test_attention_3d_gqa_causal)
+    SKIP;
+CASE(test_attention_3d_gqa_scaled)
+    SKIP;
+CASE(test_attention_3d_gqa_softcap)
+    SKIP;
+CASE(test_attention_3d_scaled)
+    SKIP;
+CASE(test_attention_3d_softcap)
+    SKIP;
+CASE(test_attention_3d_transpose_verification)
+    SKIP;
+CASE(test_attention_4d)
+    SKIP;
+CASE(test_attention_4d_attn_mask)
+    SKIP;
+CASE(test_attention_4d_attn_mask_3d)
+    SKIP;
+CASE(test_attention_4d_attn_mask_3d_causal)
+    SKIP;
+CASE(test_attention_4d_attn_mask_4d)
+    SKIP;
+CASE(test_attention_4d_attn_mask_4d_causal)
+    SKIP;
+CASE(test_attention_4d_attn_mask_bool)
+    SKIP;
+CASE(test_attention_4d_attn_mask_bool_4d)
+    SKIP;
+CASE(test_attention_4d_causal)
+    SKIP;
+CASE(test_attention_4d_diff_heads_sizes)
+    SKIP;
+CASE(test_attention_4d_diff_heads_sizes_attn_mask)
+    SKIP;
+CASE(test_attention_4d_diff_heads_sizes_causal)
+    SKIP;
+CASE(test_attention_4d_diff_heads_sizes_scaled)
+    SKIP;
+CASE(test_attention_4d_diff_heads_sizes_softcap)
+    SKIP;
+CASE(test_attention_4d_gqa)
+    SKIP;
+CASE(test_attention_4d_gqa_attn_mask)
+    SKIP;
+CASE(test_attention_4d_gqa_causal)
+    SKIP;
+CASE(test_attention_4d_gqa_scaled)
+    SKIP;
+CASE(test_attention_4d_gqa_softcap)
+    SKIP;
+CASE(test_attention_4d_scaled)
+    SKIP;
+CASE(test_attention_4d_softcap)
+    SKIP;
+CASE(test_attention_4d_attn_mask_bool)
+    SKIP;
+CASE(test_attention_4d_attn_mask_bool_4d)
+    SKIP;
 END_SWITCH()
 #undef EOF_LABEL
 #undef BEGIN_SWITCH

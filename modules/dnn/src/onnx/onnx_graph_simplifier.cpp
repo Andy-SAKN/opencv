@@ -501,6 +501,7 @@ class AttentionSubGraph : public Subgraph {
                           std::vector<Ptr<ImportNodeWrapper> >&) CV_OVERRIDE {
         // add attrs
         opencv_onnx::NodeProto* node = fusedNode.dynamicCast<ONNXNodeWrapper>()->node;
+        node->set_domain("com.microsoft");
         opencv_onnx::AttributeProto* attr_num_heads = node->add_attribute();
         attr_num_heads->set_name("num_heads");
         attr_num_heads->set_i(num_heads);
@@ -611,6 +612,7 @@ class AttentionSingleHeadSubGraph : public Subgraph {
                           std::vector<Ptr<ImportNodeWrapper> >&) CV_OVERRIDE {
         // add attrs
         opencv_onnx::NodeProto* node = fusedNode.dynamicCast<ONNXNodeWrapper>()->node;
+        node->set_domain("com.microsoft");
         opencv_onnx::AttributeProto* attr_num_heads = node->add_attribute();
         attr_num_heads->set_name("num_heads");
         attr_num_heads->set_i(num_heads);
@@ -1031,6 +1033,43 @@ private:
     int hardSigmoidId;
 };
 
+// Swish/SiLU: x * Sigmoid(x)
+class SwishSubgraph : public Subgraph
+{
+public:
+    SwishSubgraph()
+    {
+        int input = addNodeToMatch("");
+        sigmoidId = addNodeToMatch("Sigmoid", input);
+        mulId = addNodeToMatch("Mul", input, sigmoidId);
+        setFusedNode("Swish", input);
+    }
+
+    virtual bool match(const Ptr<ImportGraphWrapper>& net, int nodeId,
+                       std::vector<int>& matchedNodesIds) CV_OVERRIDE
+    {
+        if (Subgraph::match(net, nodeId, matchedNodesIds))
+        {
+            // Verify both Mul inputs trace to the same tensor as Sigmoid's input.
+            Ptr<ImportNodeWrapper> mulNode = net->getNode(matchedNodesIds[mulId]);
+            Ptr<ImportNodeWrapper> sigmoidNode = net->getNode(matchedNodesIds[sigmoidId]);
+            std::string sigmoidInput = sigmoidNode->getInputName(0);
+            std::string sigmoidOutput = net->getOutputName(matchedNodesIds[sigmoidId], 0);
+
+            for (int i = 0; i < mulNode->getNumInputs(); i++)
+            {
+                std::string mulInput = mulNode->getInputName(i);
+                if (mulInput != sigmoidOutput)
+                    return mulInput == sigmoidInput;
+            }
+        }
+        return false;
+    }
+
+private:
+    int sigmoidId, mulId;
+};
+
 class CeluSubgraph : public Subgraph
 {
 public:
@@ -1280,14 +1319,33 @@ public:
                             }
                         }
                     }
+                    // extract axis from original Gather node
+                    axis = 0;
+                    opencv_onnx::NodeProto* origGatherNode =
+                        inpNode.dynamicCast<ONNXNodeWrapper>()->node;
+                    for (int i = 0; i < origGatherNode->attribute_size(); i++) {
+                        opencv_onnx::AttributeProto attr = origGatherNode->attribute(i);
+                        if (attr.name() == "axis")
+                            axis = attr.i();
+                    }
                 }
             }
         }
         return retVal;
     }
 
+    virtual void finalize(const Ptr<ImportGraphWrapper>& net,
+                          const Ptr<ImportNodeWrapper>& fusedNode,
+                          std::vector<Ptr<ImportNodeWrapper> >& /*inputs*/) CV_OVERRIDE
+    {
+        opencv_onnx::NodeProto* node = fusedNode.dynamicCast<ONNXNodeWrapper>()->node;
+        opencv_onnx::AttributeProto* new_attr = node->add_attribute();
+        new_attr->set_name("axis");
+        new_attr->set_i(axis);
+    }
+
 private:
-    int cast, gather;
+    int cast, gather, axis;
 };
 
 /*  Constant folding shape for Expand.
@@ -1685,6 +1743,7 @@ void simplifySubgraphs(opencv_onnx::GraphProto& net)
     subgraphs.push_back(makePtr<SoftMaxSubgraph>());
     subgraphs.push_back(makePtr<SoftMaxSubgraph2>());
     subgraphs.push_back(makePtr<LogSoftMaxSubgraph>());
+    subgraphs.push_back(makePtr<SwishSubgraph>());
     subgraphs.push_back(makePtr<HardSwishSubgraph>());
     subgraphs.push_back(makePtr<CeluSubgraph>());
     subgraphs.push_back(makePtr<NormalizeSubgraph1>());
@@ -1707,6 +1766,15 @@ void simplifySubgraphs(opencv_onnx::GraphProto& net)
 }
 
 
+static std::string getExternalDataValue(const opencv_onnx::TensorProto& tensor_proto, const std::string& key)
+{
+    for (const auto& entry : tensor_proto.external_data())
+    {
+        if (entry.key() == key)
+            return entry.value();
+    }
+    return std::string();
+}
 
 static char* getTensorRAWData(const opencv_onnx::TensorProto& tensor_proto,
                               std::vector<int64_t>& tensor_data, const std::string& base_path = "")
@@ -1714,24 +1782,31 @@ static char* getTensorRAWData(const opencv_onnx::TensorProto& tensor_proto,
     if (tensor_proto.has_data_location() && tensor_proto.data_location() == opencv_onnx::TensorProto::EXTERNAL) {
     #if OPENCV_HAVE_FILESYSTEM_SUPPORT
         CV_Assert(tensor_proto.has_data_location() && tensor_proto.data_location() == opencv_onnx::TensorProto::EXTERNAL);
-        auto it_begin = tensor_proto.external_data().begin();
-        auto it_end = tensor_proto.external_data().end();
-        // file path
-        auto it = std::find_if(it_begin, it_end,[](const auto& entry) { return entry.key() == "location"; });
-        CV_CheckTrue(it != it_end, "External tensor data location is not specified");
+        std::string location_path = getExternalDataValue(tensor_proto, "location");
+        CV_CheckTrue(!location_path.empty(), "External tensor data location is not specified");
 
-
-        std::string location_path = it->value();
         std::string full_path = base_path.empty() ? location_path : utils::fs::join(base_path, location_path);
 
         std::ifstream file(full_path, std::ios::binary | std::ios::ate);
         CV_CheckTrue(file.is_open(), "Failed to open external tensor data file");
 
-        size_t size = file.tellg();
-        file.seekg(0, std::ios::beg);
-        tensor_data.resize(divUp((size_t)size, sizeof(int64_t)));
+        size_t file_size = (size_t)file.tellg();
+        size_t offset = 0;
+        std::string offset_str = getExternalDataValue(tensor_proto, "offset");
+        if (!offset_str.empty())
+            offset = (size_t)std::stoull(offset_str);
 
-        file.read((char*)tensor_data.data(), size);
+        size_t length = file_size - offset;
+        std::string length_str = getExternalDataValue(tensor_proto, "length");
+        if (!length_str.empty())
+            length = (size_t)std::stoull(length_str);
+
+        CV_Check(offset, offset <= file_size, "External data offset exceeds file size");
+        CV_Check(length, length <= file_size - offset, "External data length exceeds available bytes");
+
+        file.seekg(offset, std::ios::beg);
+        tensor_data.resize(divUp(length, sizeof(int64_t)));
+        file.read((char*)tensor_data.data(), length);
         return (char*)tensor_data.data();
     #else
         CV_Error(Error::StsNotImplemented, "External tensor data is not supported without filesystem support");

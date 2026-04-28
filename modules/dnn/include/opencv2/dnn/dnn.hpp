@@ -232,7 +232,7 @@ CV__DNN_INLINE_NS_BEGIN
         Arg();
         explicit Arg(int idx_);
         bool empty() const;
-        operator bool() const;
+        operator int() const;
         // idx > 0: the Arg is input or output argument of some operation inside inference graph
         // idx < 0: the Arg is input or output argument of a pattern
         // idx == 0: no/empty argument; used in operations where some of the inputs/outputs are optional.
@@ -459,6 +459,23 @@ CV__DNN_INLINE_NS_BEGIN
                               const int requiredInternals,
                               std::vector<MatType>&outputs,
                               std::vector<MatType>&internals) const;
+
+        // this is the method for Layer to express its attitude to the block layout
+        // or any other special form of layout. It takes
+        // layouts of the inputs and should return the desired layouts of
+        // inputs, as well as layouts of the outputs.
+        // By default, no mater what the actual inputs' layouts are,
+        // the desired inputs as well as outputs will get 'Unknown' layout values.
+        // It means that the layer can only handle non-block layout
+        // (depending on the model format, e.g. NCHW for ONNX or NHWC for TFLite)
+        // and will return tensors with non-block layout as well.
+        // Some layers could override this default behaviour:
+        // a) if they _can_ process block-layout data, like element-wise operations, or
+        // b) if they _need_ block-layout data, like convolution
+        virtual int getLayouts(const std::vector<DataLayout>& actualInputs,
+                                std::vector<DataLayout>& desiredInputs,
+                                const int requiredOutputs,
+                                std::vector<DataLayout>& outputs) const;
 
         virtual int64 getFLOPS(const std::vector<MatShape> &inputs,
                                const std::vector<MatShape> &outputs) const;
@@ -748,6 +765,19 @@ CV__DNN_INLINE_NS_BEGIN
          */
         CV_WRAP void setPreferableTarget(int targetId);
 
+        /** @brief Finalizes the network configuration and prepares it for inference.
+         *
+         * This method must be called after setting backend/target via
+         * setPreferableBackend() and setPreferableTarget(), and before the first
+         * forward() call. It creates the underlying execution session (e.g. ONNX
+         * Runtime session) on the configured backend/target. If not called
+         * explicitly, the first forward() will call it automatically.
+         *
+         * Calling finalizeNet() early lets you pay the one-time setup cost at a
+         * predictable point and catch configuration errors before inference.
+         */
+        CV_WRAP void finalizeNet();
+
         /**
          * @brief Set the tracing mode
          * @param[in] tracingMode the tracing mode, see DNN_TRACE_*
@@ -798,7 +828,12 @@ CV__DNN_INLINE_NS_BEGIN
          *  then the following forward pass may fail.
         */
         CV_WRAP void setParam(int layer, int numParam, CV_ND const Mat &blob);
-        CV_WRAP inline void setParam(const String& layerName, int numParam, CV_ND const Mat &blob) { return setParam(getLayerId(layerName), numParam, blob); }
+        /** @brief Sets the parameter blob of a layer identified by its name or output tensor name.
+         *  @param layerName layer name (classic engine) or raw ONNX output tensor name (ENGINE_NEW).
+         *  @param numParam index of the constant weight input to update (0 = kernel, 1 = bias, etc.).
+         *  @param blob the new parameter value.
+         */
+        CV_WRAP void setParam(const String& layerName, int numParam, CV_ND const Mat &blob);
 
         /** @brief Returns parameter blob of the layer.
          *  @param layer name or id of the layer.
@@ -1020,7 +1055,8 @@ CV__DNN_INLINE_NS_BEGIN
     {
         ENGINE_CLASSIC=1, //!< Force use the old dnn engine similar to 4.x branch
         ENGINE_NEW=2,     //!< Force use the new dnn engine. The engine does not support non CPU back-ends for now.
-        ENGINE_AUTO=3     //!< Try to use the new engine and then fall back to the classic version.
+        ENGINE_AUTO=3,    //!< Try to use the new engine and then fall back to the classic version.
+        ENGINE_ORT=4      //!< Try to use ONNX Runtime wrapper (ONNX only, requires build with WITH_ONNXRUNTIME=ON).
     };
 
     /** @brief Reads a network model stored in <a href="https://pjreddie.com/darknet/">Darknet</a> model files.
@@ -2074,6 +2110,60 @@ public:
 
     CV_WRAP TextDetectionModel_DB& setMaxCandidates(int maxCandidates);
     CV_WRAP int getMaxCandidates() const;
+};
+
+
+/**
+ * @brief High-level tokenizer wrapper for DNN usage.
+ *
+ * Provides a simple API to encode and decode tokens for LLMs.
+ * Models are loaded via Tokenizer::load().
+ *
+ * @code
+ * using namespace cv::dnn;
+ * Tokenizer tok = Tokenizer::load("/path/to/model/");
+ * std::vector<int> ids = tok.encode("hello world");
+ * std::string text = tok.decode(ids);
+ * @endcode
+ */
+class CV_EXPORTS_W_SIMPLE Tokenizer {
+public:
+    /**
+     * @brief Construct a tokenizer with a given method default BPE.
+     * For BPE method you normally call Tokenizer::load() to initialize model data.
+     */
+    Tokenizer();
+
+    /**
+     * @brief Load a tokenizer from a model directory.
+     *
+     * Expects the directory to contain:
+     *  - `config.json` with field `model_type` with value "gpt2" or "gpt4".
+     *  - `tokenizer.json` produced by the corresponding model family.
+     *
+     * The argument is a path prefix; this function concatenates file
+     * names directly (e.g. `model_dir` + "config.json"), so `model_dir` must
+     * end with an appropriate path separator.
+     *
+     * @param model_config  Path to config.json for model.
+     * @return A Tokenizer ready for use. Throws cv::Exception if files are missing or `model_type` is unsupported.
+     */
+    CV_WRAP static Tokenizer load(CV_WRAP_FILE_PATH const std::string& model_config);
+
+    /**
+     * @brief Encode UTF-8 text to token ids (special tokens currently disabled).
+     *
+     * Calls the underlying `CoreBPE::encode` with an empty allowed-special set.
+     *
+     * @param text  UTF-8 input string.
+     * @return Vector of token ids (32-bit ids narrowed to int for convenience).
+     */
+    CV_WRAP std::vector<int> encode(const std::string& text);
+
+    CV_WRAP std::string decode(const std::vector<int>& tokens);
+    struct Impl;
+private:
+    Ptr<Impl> impl_;
 };
 
 //! @}

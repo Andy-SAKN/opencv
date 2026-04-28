@@ -41,6 +41,7 @@
 
 #include "test_precomp.hpp"
 #include <opencv2/core/ocl.hpp>
+#include <opencv2/core/fast_math.hpp>
 #include "npy_blob.hpp"
 #include <opencv2/dnn/shape_utils.hpp>
 #include <opencv2/dnn/all_layers.hpp>
@@ -2389,6 +2390,15 @@ public:
             activationParams.set("scale", 0.3f);
             activationParams.set("shift", 0.6f);
         }
+        else if (activationParams.type == "ELU")
+        {
+            activationParams.set("alpha", 1.0f);
+        }
+        else if (activationParams.type == "HardSigmoid")
+        {
+            activationParams.set("alpha", 0.2f);
+            activationParams.set("beta", 0.5f);
+        }
     }
 
     static void makeDefaultTestEltwiseLayer(LayerParams& eltwiseParams, const std::string& op, bool withCoefficients)
@@ -2460,7 +2470,8 @@ public:
     static testing::internal::ParamGenerator<std::string> activationLayersList()
     {
         // TODO: automate list generation
-        return Values("ReLU", "ReLU6", "ChannelsPReLU", "TanH", "Swish", "Mish", "Sigmoid", "ELU", "AbsVal", "BNLL", "Power", "Exp");
+        return Values("ReLU", "ReLU6", "ChannelsPReLU", "TanH", "Swish", "Mish", "Sigmoid", "ELU",
+                       "AbsVal", "BNLL", "Power", "Exp", "HardSwish", "HardSigmoid", "Gelu", "GeluApproximation");
     }
 
     static testing::internal::ParamGenerator<tuple<Backend, Target> > dnnBackendsAndTargetsForFusionTests()
@@ -2904,6 +2915,104 @@ TEST(Layer_Size, onnx_0d_scalar)
     EXPECT_EQ(outs[0].total(), (size_t)1);
     EXPECT_EQ(outs[0].type(), CV_64S);
     EXPECT_EQ(outs[0].at<int64_t>(0), 1);
+}
+
+TEST(ConvolutionWinograd, Accuracy)
+{
+    Mat weights({2, 1, 3, 3}, CV_32F);
+    randn(weights, 0, 1);
+
+    // Check convolution can switch between implementations on changed shape.
+    auto getNet = [&]() {
+        Net net;
+        LayerParams lp;
+        lp.name = "conv";
+        lp.type = "Convolution";
+        lp.set("kernel_size", 3);
+        lp.set("num_output", 2);
+        lp.set("pad", 0);
+        lp.set("stride", 1);
+        lp.set("bias_term", false);
+
+        lp.blobs.push_back(weights);
+        net.addLayerToPrev(lp.name, lp.type, lp);
+        return net;
+    };
+
+    Mat inpSmall({1, 1, 5, 5}, CV_32F);
+    Mat inpLarge({1, 1, 64, 64}, CV_32F);
+    randn(inpSmall, 0, 1);
+    randn(inpLarge, 0, 1);
+
+    Net net1 = getNet();
+    Net net2 = getNet();
+    net1.setInput(inpSmall);
+    net2.setInput(inpLarge);
+    Mat refSmall = net1.forward();
+    Mat refLarge = net2.forward();
+
+    net1.setInput(inpLarge);
+    net2.setInput(inpSmall);
+    Mat outLarge = net1.forward();
+    Mat outSmall = net2.forward();
+
+    normAssert(outSmall, refSmall, "Small input after large", 0.0, 0.0);
+    normAssert(outLarge, refLarge, "Large input after small", 0.0, 0.0);
+}
+
+TEST(Layer_Test_GeluApprox, NoNaN_LargeInput)
+{
+    LayerParams lp;
+    lp.type = "GeluApproximation";
+    lp.name = "test_gelu_approx";
+    Ptr<Layer> layer = LayerFactory::createLayerInstance("GeluApproximation", lp);
+    ASSERT_TRUE(layer != nullptr);
+
+    float data[] = {-15.f, -10.f, -7.4f, -1.f, 0.f, 1.f, 5.f, 10.6f, 15.f, 20.f};
+    int dims[] = {1, 1, 10};
+    Mat inp(3, dims, CV_32F, data);
+    std::vector<Mat> inpVec = {inp};
+    std::vector<Mat> outVec;
+
+    runLayer(layer, inpVec, outVec);
+    ASSERT_EQ(outVec.size(), (size_t)1);
+
+    Mat& out = outVec[0];
+    for (int i = 0; i < 10; i++) {
+        float val = out.ptr<float>()[i];
+        EXPECT_FALSE(cvIsNaN(val)) << "NaN at index " << i << " (input=" << data[i] << ")";
+        EXPECT_FALSE(cvIsInf(val)) << "Inf at index " << i << " (input=" << data[i] << ")";
+    }
+
+    EXPECT_NEAR(out.ptr<float>()[9], 20.f, 0.01f);
+    EXPECT_NEAR(out.ptr<float>()[0], 0.f, 1e-6f);
+    EXPECT_NEAR(out.ptr<float>()[4], 0.f, 1e-6f);
+}
+
+TEST(Layer_Test_Softmax, NoNaN_AllNegInf)
+{
+    LayerParams lp;
+    lp.type = "Softmax";
+    lp.name = "test_softmax";
+    lp.set("axis", 1);
+    Ptr<Layer> layer = LayerFactory::createLayerInstance("Softmax", lp);
+    ASSERT_TRUE(layer != nullptr);
+
+    int dims[] = {1, 8};
+    Mat inp(2, dims, CV_32F, Scalar(-std::numeric_limits<float>::infinity()));
+    std::vector<Mat> inpVec = {inp};
+    std::vector<Mat> outVec;
+
+    runLayer(layer, inpVec, outVec);
+    ASSERT_EQ(outVec.size(), (size_t)1);
+
+    Mat& out = outVec[0];
+    for (int i = 0; i < 8; i++) {
+        float val = out.ptr<float>()[i];
+        EXPECT_FALSE(cvIsNaN(val)) << "NaN at index " << i;
+        EXPECT_FALSE(cvIsInf(val)) << "Inf at index " << i;
+        EXPECT_EQ(val, 0.f) << "Expected 0 at index " << i;
+    }
 }
 
 }} // namespace

@@ -1290,6 +1290,34 @@ TEST(Core_Mat, push_back)
     }
 }
 
+TEST(Core_Mat, copyToConvertTo_Empty)
+{
+    cv::Mat A(0, 0, CV_16SC2), B, C;
+    A.copyTo(B);
+    ASSERT_EQ(A.type(), B.type());
+    A.convertTo(C, CV_32SC2);
+    ASSERT_EQ(C.type(), CV_32SC2);
+}
+
+// Regression test for https://github.com/opencv/opencv/issues/28343
+// copyTo on empty fixed-type matrices should be a no-op and succeed
+template <typename T> class Core_Mat_copyTo : public testing::Test {};
+TYPED_TEST_CASE_P(Core_Mat_copyTo);
+
+TYPED_TEST_P(Core_Mat_copyTo, EmptyFixedType)
+{
+    cv::Mat_<TypeParam> a;
+    cv::Mat_<TypeParam> b;
+    EXPECT_NO_THROW(a.copyTo(b));
+    EXPECT_TRUE(b.empty());
+    // Verify type is still consistent after copyTo
+    EXPECT_EQ(b.type(), cv::traits::Type<TypeParam>::value);
+}
+
+REGISTER_TYPED_TEST_CASE_P(Core_Mat_copyTo, EmptyFixedType);
+typedef ::testing::Types<uchar, schar, ushort, short, int, float, double> AllMatDepths;
+INSTANTIATE_TYPED_TEST_CASE_P(CopyToTest, Core_Mat_copyTo, AllMatDepths);
+
 TEST(Core_Mat, copyNx1ToVector)
 {
     cv::Mat_<uchar> src(5, 1);
@@ -2855,6 +2883,87 @@ TEST(UMat, reshape_empty)
     EXPECT_EQ(m4d.size[2], 1);
     EXPECT_EQ(m4d.size[3], 0);
     EXPECT_EQ(m4d.total(), (size_t)0);
+}
+
+// see https://github.com/opencv/opencv/issues/27298
+TEST(Mat, copyAt_regression27298)
+{
+    cv::Mat src(40/*height*/, 30/*width*/, CV_8UC1, Scalar(255));
+    // Normal
+    {
+        cv::Mat dst(100, 100, CV_8UC1, Scalar(0));
+        cv::Mat roi(dst, cv::Rect(0, 0, 30/*width*/, 40/*height*/));
+        void* roiData = roi.data;
+        EXPECT_NO_THROW(src.copyTo(roi));
+        EXPECT_EQ(roi.data, roiData);
+        EXPECT_EQ(countNonZero(roi), roi.size().width * roi.size().height) << roi;
+    }
+    {
+        cv::Mat dst(100, 100, CV_8UC1, Scalar(0));
+        cv::Mat roi(dst, cv::Rect(0, 0, 30/*width*/, 40/*height*/));
+        void* roiData = roi.data;
+        EXPECT_NO_THROW(src.copyAt(roi));
+        EXPECT_EQ(roi.data, roiData);
+        EXPECT_EQ(countNonZero(roi), roi.size().width * roi.size().height) << roi;
+    }
+
+    // Empty
+    {
+        cv::Mat roi; // empty
+        EXPECT_NO_THROW(src.copyTo(roi));
+        EXPECT_NE(roi.data, nullptr); // Allocated
+        EXPECT_EQ(countNonZero(roi), roi.size().width * roi.size().height) << roi;
+    }
+    {
+        cv::Mat roi; // empty
+        EXPECT_ANY_THROW(src.copyAt(roi));
+    }
+
+    // Different Type
+    {
+        cv::Mat dst(100, 100, CV_16UC1, Scalar(0));
+        cv::Mat roi(dst, cv::Rect(0, 0, 30/*width*/, 40/*height*/));
+        void* roiData = roi.data;
+        EXPECT_NO_THROW(src.copyTo(roi));
+        EXPECT_NE(roi.data, roiData); // Reallocated
+        EXPECT_EQ(countNonZero(roi), roi.size().width * roi.size().height) << roi;
+    }
+    {
+        cv::Mat dst(100, 100, CV_16UC1, Scalar(0));
+        cv::Mat roi(dst, cv::Rect(0, 0, 30/*width*/, 40/*height*/));
+        EXPECT_ANY_THROW(src.copyAt(roi));
+    }
+
+    // Different Size
+    {
+        cv::Mat dst(100, 100, CV_8UC1, Scalar(0));
+        cv::Mat roi(dst, cv::Rect(0, 0, 40/*width*/, 30/*height*/));
+        void* roiData = roi.data;
+        EXPECT_NO_THROW(src.copyTo(roi));
+        EXPECT_NE(roi.data, roiData); // Reallocated
+        EXPECT_EQ(countNonZero(roi), roi.size().width * roi.size().height) << roi;
+    }
+    {
+        cv::Mat dst(100, 100, CV_8UC1, Scalar(0));
+        cv::Mat roi(dst, cv::Rect(0, 0, 40/*width*/, 30/*height*/));
+        EXPECT_ANY_THROW(src.copyAt(roi));
+    }
+}
+
+TEST(Mat, issue_27080)
+{
+    const std::vector<int> src1 = {
+        605100952,281728648,-950765003,-270340785,-799079584,-1622966965,
+        -1717860046,-203390322,-1624721112,881300643,-1841646762,247438602,
+        -1871047900,2119496294,-868027786,1408019766,-2070408066,1782683247};
+    const std::vector<int> src2 = {
+        1746441532,892162071,-61301557,-1851870915,-1183525195,693709865,
+        1669181466,746688189,1883246439,-436799897,1428311842,-531665722,
+        1634935494,-1926207121,360363535,701351235,-1113337985,40823006};
+    const std::vector<int> src3 = {INT_MAX};
+    const std::vector<int> src4 = {INT_MIN};
+    EXPECT_EQ(cv::norm(src1, src2, NORM_L1), 32321818045.);
+    EXPECT_EQ(cv::norm(src3, src4, NORM_L1), UINT_MAX);
 }
 
 }} // namespace

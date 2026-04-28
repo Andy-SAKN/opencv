@@ -131,6 +131,19 @@ void Net::setPreferableTarget(int targetId)
     return impl->setPreferableTarget(targetId);
 }
 
+void Net::finalizeNet()
+{
+    CV_TRACE_FUNCTION();
+    CV_Assert(impl);
+#ifdef HAVE_ONNXRUNTIME
+    if (impl->useOrtEngine && impl->mainGraph && impl->modelFormat == DNN_MODEL_ONNX && !impl->modelFileName.empty())
+    {
+        impl->finalizeOrt();
+        return;
+    }
+#endif
+}
+
 void Net::setInputsNames(const std::vector<String>& inputBlobNames)
 {
     CV_TRACE_FUNCTION();
@@ -163,6 +176,12 @@ void Net::setParam(int layer, int numParam, const Mat& blob)
 {
     CV_Assert(impl);
     return impl->setParam(layer, numParam, blob);
+}
+
+void Net::setParam(const String& name, int numParam, const Mat& blob)
+{
+    CV_Assert(impl);
+    return impl->setParam(name, numParam, blob);
 }
 
 int Net::getLayerId(const String& layer) const

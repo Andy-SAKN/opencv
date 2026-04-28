@@ -42,6 +42,7 @@
 
 #include "precomp.hpp"
 
+#include <cstdint>
 #include <memory>
 
 #ifdef HAVE_PNG
@@ -364,7 +365,7 @@ bool  PngDecoder::readHeader()
     m_color_type = color_type;
     m_bit_depth = bit_depth;
 
-    if (m_is_fcTL_loaded && ((long long int)x0 + w0 > m_width || (long long int)y0 + h0 > m_height || dop > 2 || bop > 1))
+    if (m_is_fcTL_loaded && ((int64_t)x0 + w0 > m_width || (int64_t)y0 + h0 > m_height || dop > 2 || bop > 1))
         return false;
 
     png_color_16p background_color;
@@ -456,7 +457,7 @@ bool  PngDecoder::readData( Mat& img )
                             if (dop == 2)
                                 memcpy(frameNext.getPixels(), frameCur.getPixels(), imagesize);
 
-                            if (x0 + w0 > frameCur.getWidth() || y0 + h0 > frameCur.getHeight())
+                            if ((uint64_t)x0 + w0 > frameCur.getWidth() || (uint64_t)y0 + h0 > frameCur.getHeight())
                             return false;
 
                             compose_frame(frameCur.getRows(), frameRaw.getRows(), bop, x0, y0, w0, h0, mat_cur);
@@ -508,7 +509,7 @@ bool  PngDecoder::readData( Mat& img )
                     dop = chunk.p[32];
                     bop = chunk.p[33];
 
-                    if (int(x0 + w0) > img.cols || int(y0 + h0) > img.rows || dop > 2 || bop > 1)
+                    if ((int64_t)x0 + w0 > img.cols || (int64_t)y0 + h0 > img.rows || dop > 2 || bop > 1)
                     {
                         return false;
                     }
@@ -683,6 +684,20 @@ bool  PngDecoder::readData( Mat& img )
                 m_exif.parseExif(exif, num_exif);
             }
 #endif
+#ifdef PNG_cICP_SUPPORTED
+            png_byte prim_id, tran_id, matrix_id, video_full_range_flag;
+            if (png_get_cICP(m_png_ptr, m_info_ptr, &prim_id, &tran_id, &matrix_id, &video_full_range_flag))
+            {
+                uint8_t cicp_data[4] = {
+                    static_cast<uint8_t>(prim_id),
+                    static_cast<uint8_t>(tran_id),
+                    static_cast<uint8_t>(matrix_id),
+                    static_cast<uint8_t>(video_full_range_flag)
+                };
+                auto& out = m_metadata[IMAGE_METADATA_CICP];
+                out.insert(out.end(), cicp_data, cicp_data + 4);
+            }
+#endif
 
             result = true;
         }
@@ -715,7 +730,7 @@ void PngDecoder::compose_frame(std::vector<png_bytep>& rows_dst, const std::vect
 
             // Blending mode
             for (unsigned int i = 0; i < w; i++, sp += channels, dp += channels) {
-                uint16_t alpha = sp[3];
+                uint16_t alpha = channels < 4 ? 0 : sp[3];
 
                 if (channels < 4 || alpha == 65535 || dp[3] == 0) {
                     // Fully opaque OR destination fully transparent: direct copy
@@ -745,7 +760,7 @@ void PngDecoder::compose_frame(std::vector<png_bytep>& rows_dst, const std::vect
 
             // Blending mode
             for (unsigned int i = 0; i < w; i++, sp += channels, dp += channels) {
-                uint8_t alpha = sp[3];
+                uint8_t alpha = channels < 4 ? 0 : sp[3];
 
                 if (channels < 4 || alpha == 255 || dp[3] == 0) {
                     // Fully opaque OR destination fully transparent: direct copy
